@@ -78,3 +78,25 @@ run_guard() {
   [ "$status" -eq 0 ]
   [ ! -f .docs-sentinel-context.md ]
 }
+
+@test "staged disallowed edit is detected and fully reverted (index included)" {
+  echo "code v2" > src/app.ts
+  git add src/app.ts
+  run_guard
+  [ "$status" -eq 1 ]
+  [ -z "$(git status --porcelain)" ]
+}
+
+@test "staged-only allowed edit still reports changed=true" {
+  echo "readme v2" > README.md
+  git add README.md
+  run_guard
+  [ "$status" -eq 0 ]
+  grep -q 'changed=true' "$GITHUB_OUTPUT"
+}
+
+@test "non-numeric budget fails closed" {
+  echo "readme v2" > README.md
+  FILE_BUDGET=abc run_guard
+  [ "$status" -eq 1 ]
+}
