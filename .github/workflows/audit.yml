@@ -8,7 +8,7 @@ name: Docs Sentinel
 # PR comment are built from the auditor's own summary of what it changed PLUS the actual doc diff.
 #
 # The engine (shell scripts + prompt skeleton) is fetched at runtime into $RUNNER_TEMP, pinned to
-# github.job_workflow_sha — the exact commit of this workflow file the caller pinned — so consumer
+# job.workflow_sha — the exact commit of this workflow file the caller pinned — so consumer
 # workspaces stay pristine and engine and workflow can never skew.
 #
 # Default model routing is GLM via OpenRouter (Anthropic-compatible endpoint, bearer auth). For
@@ -191,14 +191,16 @@ jobs:
 
       - name: Fetch docs-sentinel engine
         env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
-          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          JOB_WORKFLOW_REPO: ${{ job.workflow_repository }}
           SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
-          # job_workflow_ref: owner/repo/.github/workflows/audit.yml@refs/tags/v1
-          REF="${JOB_WORKFLOW_REF:?github.job_workflow_ref was empty}"
-          REPO_SLUG="${REF%%/.github/*}"
+          # job.workflow_ref: owner/repo/.github/workflows/audit.yml@refs/tags/v1 — identifies THIS
+          # reusable workflow file as pinned by the caller. (Not populated on GitHub Enterprise Server.)
+          REF="${JOB_WORKFLOW_REF:?job.workflow_ref was empty — docs-sentinel requires github.com (job.workflow_* is not available on GHES)}"
+          REPO_SLUG="${JOB_WORKFLOW_REPO:-${REF%%/.github/*}}"
           PIN="${JOB_WORKFLOW_SHA:-}"
           if [ -z "$PIN" ]; then PIN="${REF##*@}"; fi
           ENGINE_CHECKOUT="$RUNNER_TEMP/docs-sentinel"
@@ -419,13 +421,16 @@ jobs:
 
       - name: Fetch docs-sentinel engine
         env:
-          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
-          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          JOB_WORKFLOW_REF: ${{ job.workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ job.workflow_sha }}
+          JOB_WORKFLOW_REPO: ${{ job.workflow_repository }}
           SERVER_URL: ${{ github.server_url }}
         run: |
           set -euo pipefail
-          REF="${JOB_WORKFLOW_REF:?github.job_workflow_ref was empty}"
-          REPO_SLUG="${REF%%/.github/*}"
+          # job.workflow_ref: owner/repo/.github/workflows/audit.yml@refs/tags/v1 — identifies THIS
+          # reusable workflow file as pinned by the caller. (Not populated on GitHub Enterprise Server.)
+          REF="${JOB_WORKFLOW_REF:?job.workflow_ref was empty — docs-sentinel requires github.com (job.workflow_* is not available on GHES)}"
+          REPO_SLUG="${JOB_WORKFLOW_REPO:-${REF%%/.github/*}}"
           PIN="${JOB_WORKFLOW_SHA:-}"
           if [ -z "$PIN" ]; then PIN="${REF##*@}"; fi
           ENGINE_CHECKOUT="$RUNNER_TEMP/docs-sentinel"
