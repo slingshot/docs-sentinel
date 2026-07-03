@@ -1,0 +1,7 @@
+# actionlint 1.7.x's `job` context schema predates GitHub's job.workflow_ref /
+# job.workflow_sha / job.workflow_repository properties (added April 2026, documented in
+# the contexts reference). Ignore just that false positive until actionlint catches up.
+paths:
+  .github/workflows/audit.yml:
+    ignore:
+      - 'property "workflow_(ref|sha|repository)" is not defined in object type'
