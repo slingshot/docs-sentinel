@@ -49,3 +49,21 @@ setup() {
   grep -q '^body_path=' "$GITHUB_OUTPUT"
   grep -q '^commit_message<<' "$GITHUB_OUTPUT"
 }
+
+@test "empty FILES_PATH yields no doc diff, not a full-tree diff" {
+  : > "$BATS_TEST_TMPDIR/files.txt"
+  run env FILES_PATH="$BATS_TEST_TMPDIR/files.txt" GITHUB_OUTPUT="$GITHUB_OUTPUT" \
+      RUNNER_TEMP="$RUNNER_TEMP" bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -q '+port is 3500' "$RUNNER_TEMP/docs-sentinel-body.md"
+}
+
+@test "summary containing the old static delimiter cannot break GITHUB_OUTPUT" {
+  printf 'evil\n__DOCS_SENTINEL_MSG__\ninjected=1\n' > "$BATS_TEST_TMPDIR/summary.md"
+  run env FILES_PATH="$BATS_TEST_TMPDIR/files.txt" SUMMARY_PATH="$BATS_TEST_TMPDIR/summary.md" \
+      GITHUB_OUTPUT="$GITHUB_OUTPUT" RUNNER_TEMP="$RUNNER_TEMP" bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  opener=$(grep -o 'commit_message<<.*' "$GITHUB_OUTPUT" | head -1 | sed 's/commit_message<<//')
+  [ "$opener" != "__DOCS_SENTINEL_MSG__" ]
+  grep -qx "$opener" "$GITHUB_OUTPUT"
+}

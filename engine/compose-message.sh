@@ -35,7 +35,12 @@ while IFS= read -r _f; do
   if [ -n "$_f" ]; then _files+=("$_f"); fi
 done < "$FILES_PATH"
 FULL_DIFF="$TMP/docs-sentinel-docdiff.full"
-git diff --no-color -- ${_files[@]+"${_files[@]}"} > "$FULL_DIFF" 2>/dev/null || : > "$FULL_DIFF"
+# An empty pathspec list would mean `git diff -- ` (the WHOLE tree) — guard it.
+if [ "${#_files[@]}" -eq 0 ]; then
+  : > "$FULL_DIFF"
+else
+  git diff --no-color -- "${_files[@]}" > "$FULL_DIFF" 2>/dev/null || : > "$FULL_DIFF"
+fi
 head -c "$DIFF_CAP" "$FULL_DIFF" > "$DOC_DIFF"
 DIFF_NOTE=""
 if [ "$(wc -c < "$FULL_DIFF")" -gt "$DIFF_CAP" ]; then
@@ -87,12 +92,15 @@ fi
   sed 's/^/  - /' "$FILES_PATH"
 } > "$COMMIT"
 
+# Random heredoc delimiter: the commit message embeds LLM-generated summary text, and a
+# predictable delimiter line inside it would terminate the block early (output injection).
+DELIM="__DOCS_SENTINEL_MSG_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')__"
 {
   echo "commit_path=$COMMIT"
   echo "body_path=$BODY"
-  echo "commit_message<<__DOCS_SENTINEL_MSG__"
+  echo "commit_message<<$DELIM"
   cat "$COMMIT"
-  echo "__DOCS_SENTINEL_MSG__"
+  echo "$DELIM"
 } >> "$GITHUB_OUTPUT"
 
 echo "Composed docs-sentinel commit message and PR body:"
