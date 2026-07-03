@@ -1,0 +1,552 @@
+name: Docs Sentinel
+
+# Reusable workflow: audits each change's code diff and keeps the calling repo's documentation in
+# sync with it. On a PR it commits doc fixes to the PR branch AND always leaves a single, sticky
+# status comment (upserted by a hidden marker). On a push to the default branch it maintains ONE
+# rolling, dependabot-style draft PR on a fixed sync branch — recreated from the current tip every
+# run, so it is always rebased (no stale per-SHA PRs piling up). The commit message, PR body, and
+# PR comment are built from the auditor's own summary of what it changed PLUS the actual doc diff.
+#
+# The engine (shell scripts + prompt skeleton) is fetched at runtime into $RUNNER_TEMP, pinned to
+# github.job_workflow_sha — the exact commit of this workflow file the caller pinned — so consumer
+# workspaces stay pristine and engine and workflow can never skew.
+#
+# Default model routing is GLM via OpenRouter (Anthropic-compatible endpoint, bearer auth). For
+# Anthropic-native auth: use-bearer-auth: false, anthropic-base-url: '', model: '', small-model: ''.
+
+on:
+  workflow_call:
+    inputs:
+      policy-file:
+        description: Path (in the calling repo) to the repo-specific auditor policy markdown
+        type: string
+        default: .github/docs-sentinel/policy.md
+      allowlist-regex:
+        description: Anchored ERE — the ONLY paths the auditor may edit
+        type: string
+        default: '^(AGENTS\.md|CLAUDE\.md|README\.md|docs/.*|.*/CLAUDE\.md|.*/AGENTS\.md|.*/README\.md|\.claude/skills/.*)$'
+      denylist-regex:
+        description: ERE — forbidden even if allowlisted
+        type: string
+        default: '(^|/)CHANGELOG\.md$'
+      file-budget:
+        description: Max files the auditor may change before its edits are reverted
+        type: string
+        default: '15'
+      line-budget:
+        description: Max total changed lines before the auditor's edits are reverted
+        type: string
+        default: '800'
+      skip-if-only-regex:
+        description: ERE — the gate skips the audit when EVERY changed file matches
+        type: string
+        default: '(\.md$|(^|/)__tests__/|\.test\.|\.spec\.|(^|/)(bun\.lock|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|go\.sum|Gemfile\.lock)$)'
+      diff-exclude:
+        description: Space-separated file patterns excluded from the diff text shown to the auditor
+        type: string
+        default: 'bun.lock package-lock.json yarn.lock pnpm-lock.yaml Cargo.lock poetry.lock uv.lock go.sum Gemfile.lock'
+      sync-branch:
+        description: Fixed branch for the rolling default-branch docs-sync PR
+        type: string
+        default: docs/sync
+      runner:
+        description: Runner label for all jobs
+        type: string
+        default: ubuntu-latest
+      claude-code-version:
+        description: Pinned @anthropic-ai/claude-code npm version
+        type: string
+        default: '2.1.193'
+      anthropic-base-url:
+        description: Gateway base URL (empty = Anthropic default endpoint)
+        type: string
+        default: 'https://openrouter.ai/api'
+      model:
+        description: Main session model slug (empty = Claude Code defaults)
+        type: string
+        default: 'z-ai/glm-5.2'
+      small-model:
+        description: Haiku-tier / background model slug (empty = Claude Code defaults)
+        type: string
+        default: 'z-ai/glm-4.6'
+      use-bearer-auth:
+        description: 'true: MODEL_API_KEY -> ANTHROPIC_AUTH_TOKEN (OpenRouter-style). false: -> ANTHROPIC_API_KEY (Anthropic-native)'
+        type: boolean
+        default: true
+    secrets:
+      MODEL_API_KEY:
+        description: API key for the model gateway. Unset -> the whole workflow no-ops gracefully.
+        required: false
+      SYNC_PR_TOKEN:
+        description: PAT/App token for the sync PR so it triggers downstream CI. Unset -> GITHUB_TOKEN fallback (PR opens, checks won't auto-trigger).
+        required: false
+
+jobs:
+  # ─── Gate: the cost firewall AND the primary loop-breaker ───────────────────
+  gate:
+    name: Gate
+    runs-on: ${{ inputs.runner }}
+    # Skip our own sync commits, fork PRs (no secrets there anyway — this is insurance), drafts.
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) &&
+      (github.event_name == 'push' || github.event.pull_request.draft == false)
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      range: ${{ steps.decide.outputs.range }}
+      # not_configured | skip_marker | no_source_changes | '' (empty when run=true)
+      skip_reason: ${{ steps.decide.outputs.skip_reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to spend the auditor
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          SYNC_BRANCH: ${{ inputs.sync-branch }}
+          SKIP_RE: ${{ inputs.skip-if-only-regex }}
+          MODEL_KEY_SET: ${{ secrets.MODEL_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+
+          # Graceful no-op until the model secret is configured (also covers forks).
+          if [ "$MODEL_KEY_SET" != "true" ]; then
+            echo "MODEL_API_KEY is not configured — skipping the docs audit."
+            echo "Provide the MODEL_API_KEY secret to enable docs-sentinel."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=not_configured" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Loop guard: our own sync commits carry [skip docs-sentinel].
+          if printf '%s' "${HEAD_MSG:-}" | grep -qF '[skip docs-sentinel]'; then
+            echo "Skip marker present; not running."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=skip_marker" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            RANGE="origin/${BASE_REF}...HEAD"
+          else
+            # Push to the default branch. Drive the single rolling docs-sync PR: if its branch
+            # already exists, audit the whole span since it last diverged, so the one PR
+            # accumulates every un-merged doc fix and stays rebased (dependabot-style).
+            git fetch --quiet origin "+refs/heads/${SYNC_BRANCH}:refs/remotes/origin/${SYNC_BRANCH}" 2>/dev/null || true
+            MERGE_BASE=""
+            if git rev-parse --verify --quiet "refs/remotes/origin/${SYNC_BRANCH}" >/dev/null; then
+              MERGE_BASE=$(git merge-base "refs/remotes/origin/${SYNC_BRANCH}" "$SHA" 2>/dev/null || true)
+            fi
+            if [ -n "$MERGE_BASE" ]; then
+              RANGE="${MERGE_BASE}...${SHA}"
+            elif [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              RANGE="HEAD~1...HEAD"
+            else
+              RANGE="${BEFORE}...${SHA}"
+            fi
+          fi
+          echo "range=$RANGE" >> "$GITHUB_OUTPUT"
+
+          # shellcheck disable=SC2086
+          CHANGED=$(git diff --name-only --diff-filter=ACMR $RANGE)
+          echo "Changed files in $RANGE:"; echo "$CHANGED"
+
+          # Strip files that never warrant a docs audit (docs themselves, tests, lockfiles).
+          INTERESTING=$(printf '%s\n' "$CHANGED" | grep -vE "$SKIP_RE" || true)
+
+          if [ -z "$INTERESTING" ]; then
+            echo "Only docs/tests/lockfiles changed — skipping auditor (also breaks the sync loop)."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=no_source_changes" >> "$GITHUB_OUTPUT"
+          else
+            echo "Source-level changes detected — running auditor."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ─── PR path: fix docs and commit straight to the PR branch ─────────────────
+  audit-pr:
+    name: Audit & fix docs (PR)
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && github.event_name == 'pull_request'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: docs-sentinel-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}          # PR branch tip so we can push back
+          fetch-depth: 0                        # default GITHUB_TOKEN creds -> push does NOT re-trigger CI
+
+      - name: Fetch docs-sentinel engine
+        env:
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          # job_workflow_ref: owner/repo/.github/workflows/audit.yml@refs/tags/v1
+          REF="${JOB_WORKFLOW_REF:?github.job_workflow_ref was empty}"
+          REPO_SLUG="${REF%%/.github/*}"
+          PIN="${JOB_WORKFLOW_SHA:-}"
+          if [ -z "$PIN" ]; then PIN="${REF##*@}"; fi
+          ENGINE_CHECKOUT="$RUNNER_TEMP/docs-sentinel"
+          rm -rf "$ENGINE_CHECKOUT"; mkdir -p "$ENGINE_CHECKOUT"
+          git -C "$ENGINE_CHECKOUT" init -q
+          git -C "$ENGINE_CHECKOUT" remote add origin "${SERVER_URL}/${REPO_SLUG}.git"
+          git -C "$ENGINE_CHECKOUT" fetch -q --depth 1 origin "$PIN"
+          git -C "$ENGINE_CHECKOUT" checkout -q FETCH_HEAD
+          echo "ENGINE_DIR=$ENGINE_CHECKOUT/engine" >> "$GITHUB_ENV"
+
+      - name: Validate policy file
+        env:
+          POLICY_FILE: ${{ inputs.policy-file }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$POLICY_FILE" ]; then
+            echo "::error::docs-sentinel policy file not found at '$POLICY_FILE'. Create it (see https://github.com/slingshot/docs-sentinel#2-write-your-policy-file) or set the policy-file input."
+            exit 1
+          fi
+          echo "POLICY_FILE=$POLICY_FILE" >> "$GITHUB_ENV"
+
+      - name: Configure model routing
+        env:
+          BASE_URL: ${{ inputs.anthropic-base-url }}
+          MODEL: ${{ inputs.model }}
+          SMALL: ${{ inputs.small-model }}
+          USE_BEARER: ${{ inputs.use-bearer-auth }}
+          MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
+        run: |
+          set -euo pipefail
+          # Claude Code resolves models per TIER; pointing it at a non-Anthropic gateway means
+          # EVERY tier must map to a gateway slug — any tier left as a claude-* alias would be
+          # sent to the gateway as-is and fail. Empty inputs -> leave Claude Code's defaults.
+          if [ -n "$BASE_URL" ]; then echo "ANTHROPIC_BASE_URL=$BASE_URL" >> "$GITHUB_ENV"; fi
+          if [ -n "$MODEL" ]; then
+            {
+              echo "ANTHROPIC_MODEL=$MODEL"
+              echo "ANTHROPIC_DEFAULT_OPUS_MODEL=$MODEL"
+              echo "ANTHROPIC_DEFAULT_SONNET_MODEL=$MODEL"
+              echo "ANTHROPIC_DEFAULT_FABLE_MODEL=$MODEL"
+              echo "CLAUDE_CODE_SUBAGENT_MODEL=$MODEL"
+            } >> "$GITHUB_ENV"
+          fi
+          if [ -n "$SMALL" ]; then
+            {
+              echo "ANTHROPIC_DEFAULT_HAIKU_MODEL=$SMALL"
+              echo "ANTHROPIC_SMALL_FAST_MODEL=$SMALL"
+            } >> "$GITHUB_ENV"
+          fi
+          if [ "$USE_BEARER" = "true" ]; then
+            echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"
+            echo "ANTHROPIC_API_KEY=" >> "$GITHUB_ENV"
+          else
+            echo "ANTHROPIC_API_KEY=$MODEL_KEY" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build diff context
+        env:
+          RANGE: ${{ needs.gate.outputs.range }}
+          DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
+        run: bash "$ENGINE_DIR/build-context.sh"
+
+      - name: Run docs auditor (Claude Code CLI)
+        env:
+          CLAUDE_VERSION: ${{ inputs.claude-code-version }}
+        run: |
+          set -euo pipefail
+          # Install via npm (not bun) so the postinstall that fetches the native binary runs.
+          # Pinned version, isolated prefix -> deterministic, no global perms.
+          npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
+          export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
+          claude --version
+          cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
+          # --output-format json so we can lift the auditor's final summary into the commit
+          # message + PR body in a later step, instead of boilerplate.
+          set +e
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
+            --allowed-tools "Read,Edit,Grep,Glob,Bash(git diff:*)" \
+            --permission-mode acceptEdits \
+            --output-format json > "$RUNNER_TEMP/auditor.json"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Claude Code exited with status $status"; cat "$RUNNER_TEMP/auditor.json" || true
+            exit "$status"
+          fi
+          jq -r '.result // ""' "$RUNNER_TEMP/auditor.json" > "$RUNNER_TEMP/auditor-summary.md"
+          echo "----- Auditor summary -----"; cat "$RUNNER_TEMP/auditor-summary.md"; echo "---------------------------"
+
+      - name: Guardrail — keep edits in the doc allowlist and bounded
+        id: guard
+        env:
+          ALLOW: ${{ inputs.allowlist-regex }}
+          DENY: ${{ inputs.denylist-regex }}
+          FILE_BUDGET: ${{ inputs.file-budget }}
+          LINE_BUDGET: ${{ inputs.line-budget }}
+        run: bash "$ENGINE_DIR/guardrail.sh"
+
+      - name: Compose commit message & PR comment from the auditor summary
+        id: compose
+        if: steps.guard.outputs.changed == 'true'
+        env:
+          FILES_PATH: ${{ steps.guard.outputs.files_path }}
+          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash "$ENGINE_DIR/compose-message.sh"
+
+      - name: Commit & push doc fixes to the PR branch
+        if: steps.guard.outputs.changed == 'true'
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          COMMIT_PATH: ${{ steps.compose.outputs.commit_path }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -F "$COMMIT_PATH"
+          git push origin "HEAD:${HEAD_REF}"
+
+      # Always leave a single, sticky status comment — drift or not — so every PR shows the
+      # docs-sentinel result instead of going silent when there's nothing to fix.
+      - name: Post docs-sentinel status comment (sticky)
+        uses: actions/github-script@v7
+        env:
+          CHANGED: ${{ steps.guard.outputs.changed }}
+          BODY_PATH: ${{ steps.compose.outputs.body_path }}
+          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- docs-sentinel-status -->';
+            let body;
+            if (process.env.CHANGED === 'true') {
+              body = fs.readFileSync(process.env.BODY_PATH, 'utf8');
+            } else {
+              let reason = '';
+              try { reason = fs.readFileSync(process.env.SUMMARY_PATH, 'utf8').trim(); } catch {}
+              if (!reason) {
+                reason = 'No documentation updates needed — the code change did not contradict any in-scope doc.';
+              }
+              body = [
+                '🤖 **Docs audit** — no documentation drift detected.',
+                '',
+                reason,
+                '',
+                '<sub>Generated by [docs-sentinel](https://github.com/slingshot/docs-sentinel).</sub>',
+              ].join('\n');
+            }
+            const full = `${marker}\n${body}`;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body: full });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body: full });
+            }
+
+  # ─── PR path (skipped audit): still leave the no-drift status comment ───────
+  comment-pr-skip:
+    name: Note skipped audit (PR)
+    needs: gate
+    if: >-
+      github.event_name == 'pull_request' &&
+      needs.gate.outputs.run != 'true' &&
+      needs.gate.outputs.skip_reason == 'no_source_changes'
+    runs-on: ${{ inputs.runner }}
+    permissions:
+      pull-requests: write
+    concurrency:
+      group: docs-sentinel-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Post docs-sentinel status comment (sticky)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- docs-sentinel-status -->';
+            const body = [
+              marker,
+              '🤖 **Docs audit** — skipped: this change touches no source files (docs, tests, or lockfiles only), so it cannot make any doc stale.',
+              '',
+              '<sub>Generated by [docs-sentinel](https://github.com/slingshot/docs-sentinel).</sub>',
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  # ─── default-branch path: fix docs and maintain the rolling docs-sync PR ────
+  audit-main:
+    name: Audit & fix docs (default branch)
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && github.event_name == 'push'
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: docs-sentinel-main
+      cancel-in-progress: false               # never cancel a half-opened PR
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch docs-sentinel engine
+        env:
+          JOB_WORKFLOW_REF: ${{ github.job_workflow_ref }}
+          JOB_WORKFLOW_SHA: ${{ github.job_workflow_sha }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          REF="${JOB_WORKFLOW_REF:?github.job_workflow_ref was empty}"
+          REPO_SLUG="${REF%%/.github/*}"
+          PIN="${JOB_WORKFLOW_SHA:-}"
+          if [ -z "$PIN" ]; then PIN="${REF##*@}"; fi
+          ENGINE_CHECKOUT="$RUNNER_TEMP/docs-sentinel"
+          rm -rf "$ENGINE_CHECKOUT"; mkdir -p "$ENGINE_CHECKOUT"
+          git -C "$ENGINE_CHECKOUT" init -q
+          git -C "$ENGINE_CHECKOUT" remote add origin "${SERVER_URL}/${REPO_SLUG}.git"
+          git -C "$ENGINE_CHECKOUT" fetch -q --depth 1 origin "$PIN"
+          git -C "$ENGINE_CHECKOUT" checkout -q FETCH_HEAD
+          echo "ENGINE_DIR=$ENGINE_CHECKOUT/engine" >> "$GITHUB_ENV"
+
+      - name: Validate policy file
+        env:
+          POLICY_FILE: ${{ inputs.policy-file }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "$POLICY_FILE" ]; then
+            echo "::error::docs-sentinel policy file not found at '$POLICY_FILE'. Create it (see https://github.com/slingshot/docs-sentinel#2-write-your-policy-file) or set the policy-file input."
+            exit 1
+          fi
+          echo "POLICY_FILE=$POLICY_FILE" >> "$GITHUB_ENV"
+
+      - name: Configure model routing
+        env:
+          BASE_URL: ${{ inputs.anthropic-base-url }}
+          MODEL: ${{ inputs.model }}
+          SMALL: ${{ inputs.small-model }}
+          USE_BEARER: ${{ inputs.use-bearer-auth }}
+          MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_URL" ]; then echo "ANTHROPIC_BASE_URL=$BASE_URL" >> "$GITHUB_ENV"; fi
+          if [ -n "$MODEL" ]; then
+            {
+              echo "ANTHROPIC_MODEL=$MODEL"
+              echo "ANTHROPIC_DEFAULT_OPUS_MODEL=$MODEL"
+              echo "ANTHROPIC_DEFAULT_SONNET_MODEL=$MODEL"
+              echo "ANTHROPIC_DEFAULT_FABLE_MODEL=$MODEL"
+              echo "CLAUDE_CODE_SUBAGENT_MODEL=$MODEL"
+            } >> "$GITHUB_ENV"
+          fi
+          if [ -n "$SMALL" ]; then
+            {
+              echo "ANTHROPIC_DEFAULT_HAIKU_MODEL=$SMALL"
+              echo "ANTHROPIC_SMALL_FAST_MODEL=$SMALL"
+            } >> "$GITHUB_ENV"
+          fi
+          if [ "$USE_BEARER" = "true" ]; then
+            echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"
+            echo "ANTHROPIC_API_KEY=" >> "$GITHUB_ENV"
+          else
+            echo "ANTHROPIC_API_KEY=$MODEL_KEY" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build diff context
+        env:
+          RANGE: ${{ needs.gate.outputs.range }}
+          DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
+        run: bash "$ENGINE_DIR/build-context.sh"
+
+      - name: Run docs auditor (Claude Code CLI)
+        env:
+          CLAUDE_VERSION: ${{ inputs.claude-code-version }}
+        run: |
+          set -euo pipefail
+          npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
+          export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
+          claude --version
+          cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
+          set +e
+          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
+            --allowed-tools "Read,Edit,Grep,Glob,Bash(git diff:*)" \
+            --permission-mode acceptEdits \
+            --output-format json > "$RUNNER_TEMP/auditor.json"
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Claude Code exited with status $status"; cat "$RUNNER_TEMP/auditor.json" || true
+            exit "$status"
+          fi
+          jq -r '.result // ""' "$RUNNER_TEMP/auditor.json" > "$RUNNER_TEMP/auditor-summary.md"
+          echo "----- Auditor summary -----"; cat "$RUNNER_TEMP/auditor-summary.md"; echo "---------------------------"
+
+      - name: Guardrail — keep edits in the doc allowlist and bounded
+        id: guard
+        env:
+          ALLOW: ${{ inputs.allowlist-regex }}
+          DENY: ${{ inputs.denylist-regex }}
+          FILE_BUDGET: ${{ inputs.file-budget }}
+          LINE_BUDGET: ${{ inputs.line-budget }}
+        run: bash "$ENGINE_DIR/guardrail.sh"
+
+      - name: Compose commit message & PR body from the auditor summary
+        id: compose
+        if: steps.guard.outputs.changed == 'true'
+        env:
+          FILES_PATH: ${{ steps.guard.outputs.files_path }}
+          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SHA: ${{ github.sha }}
+        run: bash "$ENGINE_DIR/compose-message.sh"
+
+      - name: Note GITHUB_TOKEN fallback
+        if: steps.guard.outputs.changed == 'true'
+        env:
+          HAS_TOKEN: ${{ secrets.SYNC_PR_TOKEN != '' }}
+        run: |
+          if [ "$HAS_TOKEN" != "true" ]; then
+            echo "::warning::SYNC_PR_TOKEN is not set — opening the docs-sync PR with GITHUB_TOKEN. CI checks will NOT auto-trigger on that PR (GitHub suppresses events from GITHUB_TOKEN pushes). Provide a PAT or GitHub App token as SYNC_PR_TOKEN to fix this."
+          fi
+
+      - name: Open / update the rolling docs-sync PR
+        if: steps.guard.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.SYNC_PR_TOKEN || github.token }}
+          # Fixed branch (not per-SHA): recreated from the CURRENT tip on every run, so there is
+          # ONE rolling, always-rebased draft PR — dependabot-style. delete-branch tidies up once
+          # it merges or goes empty.
+          branch: ${{ inputs.sync-branch }}
+          delete-branch: true
+          base: ${{ github.ref_name }}
+          draft: true
+          commit-message: ${{ steps.compose.outputs.commit_message }}
+          title: "docs: sync documentation with code changes"
+          body-path: ${{ steps.compose.outputs.body_path }}
