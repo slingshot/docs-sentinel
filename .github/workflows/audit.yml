@@ -68,7 +68,7 @@ on:
       small-model:
         description: Haiku-tier / background model slug (empty = Claude Code defaults)
         type: string
-        default: 'z-ai/glm-4.6'
+        default: 'deepseek/deepseek-v4-flash'
       use-bearer-auth:
         description: 'true: MODEL_API_KEY -> ANTHROPIC_AUTH_TOKEN (OpenRouter-style). false: -> ANTHROPIC_API_KEY (Anthropic-native)'
         type: boolean
