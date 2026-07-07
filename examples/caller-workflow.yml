@@ -1,0 +1,29 @@
+# Copy this file to .github/workflows/docs-sentinel.yml in your repo, then:
+#   1. Create .github/docs-sentinel/policy.md (see examples/policy.md).
+#   2. Add the MODEL_API_KEY repo secret (an OpenRouter key, by default).
+#   3. (Recommended) Add SYNC_PR_TOKEN — a PAT or GitHub App token — so the rolling
+#      docs-sync PR on your default branch triggers your CI. Without it the PR still
+#      opens via GITHUB_TOKEN, but its checks won't auto-run.
+name: Docs Sentinel
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+  push:
+    branches: [main]
+
+# A called workflow can only DOWNGRADE these — the caller must grant them.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  docs-sentinel:
+    uses: slingshot/docs-sentinel/.github/workflows/audit.yml@v1
+    secrets:
+      MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+      SYNC_PR_TOKEN: ${{ secrets.SYNC_PR_TOKEN }}
+    with:
+      # The ONLY paths the auditor may edit (anchored ERE). Tune to your doc layout.
+      allowlist-regex: '^(AGENTS\.md|CLAUDE\.md|README\.md|docs/.*|.*/README\.md)$'

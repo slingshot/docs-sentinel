@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bats + shellcheck
+        run: sudo apt-get update -q && sudo apt-get install -y -q bats shellcheck
+      - name: Shellcheck engine scripts
+        run: shellcheck engine/*.sh
+      - name: Run engine tests
+        run: bats tests
+      - name: Lint workflows
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: -color
