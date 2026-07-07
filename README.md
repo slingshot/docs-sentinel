@@ -33,6 +33,20 @@ any documentation the change made inaccurate, and fixes it — surgically.
 
 ## Quickstart
 
+> **🤖 Setting up with an AI agent?** Paste this into Claude Code, Cursor, or any coding agent
+> with access to your repo, and skip straight to [step 3 (secrets)](#3-add-secrets):
+>
+> ```text
+> Set up docs-sentinel (an AI docs-drift auditor that runs in GitHub Actions CI) in this
+> repository. Fetch https://raw.githubusercontent.com/slingshot/docs-sentinel/v1/AGENT_SETUP.md
+> and follow it exactly: survey this repo's documentation layout, create the caller workflow
+> and policy file tailored to it, then tell me which secrets to add and how to verify the
+> first run.
+> ```
+>
+> The full agent-facing guide lives at [`AGENT_SETUP.md`](AGENT_SETUP.md) — it always matches
+> the workflow version served by the `v1` tag.
+
 ### 1. Add the caller workflow
 
 Copy [`examples/caller-workflow.yml`](examples/caller-workflow.yml) to
