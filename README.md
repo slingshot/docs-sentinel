@@ -1,19 +1,35 @@
-# Docs Sentinel
+<div align="center">
 
-**CI that keeps your docs telling the truth.** On every pull request and push to your default
-branch, an AI auditor reads the code diff, finds any documentation the change made inaccurate,
-and fixes it — surgically, under a mechanical guardrail it cannot talk its way past.
+# 🛰️ Docs Sentinel
 
-- **On a PR:** doc fixes are committed straight to the PR branch, and one sticky status comment
-  reports the result — drift found and fixed, or "no drift" (never silence, never comment spam).
-- **On a push to your default branch:** it maintains a single rolling draft **docs-sync PR**
+**CI that keeps your docs telling the truth.**
+
+*An AI documentation auditor wrapped in a mechanical guardrail it cannot talk its way past —*
+*shipped as a single reusable GitHub Actions workflow.*
+
+[![CI](https://github.com/slingshot/docs-sentinel/actions/workflows/ci.yml/badge.svg)](https://github.com/slingshot/docs-sentinel/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/v/tag/slingshot/docs-sentinel?label=version&sort=semver&color=6f42c1)](https://github.com/slingshot/docs-sentinel/tags)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+[Quickstart](#quickstart) · [Inputs](#inputs) · [How it works](#how-it-works) · [Degradation modes](#degradation-modes) · [FAQ](#faq)
+
+</div>
+
+---
+
+On every pull request and push to your default branch, an AI auditor reads the code diff, finds
+any documentation the change made inaccurate, and fixes it — surgically.
+
+- 🔧 **On a PR** — doc fixes are committed straight to the PR branch, and one sticky status comment
+  reports the result: drift found and fixed, or "no drift" (never silence, never comment spam).
+- 🔁 **On a push to your default branch** — it maintains a single rolling draft **docs-sync PR**
   (dependabot-style: one fixed branch, always rebased, accumulates un-merged fixes).
-- **A gate runs first** so you never pay for model calls on docs-only, test-only, or
+- 🚦 **A gate runs first** — you never pay for model calls on docs-only, test-only, or
   lockfile-only changes.
-- **A guardrail runs after:** the auditor's edits must stay inside YOUR doc allowlist and under a
-  churn budget (default 15 files / 800 lines) — otherwise every edit is reverted and the job fails.
-- Commit messages and PR bodies are built from the auditor's own summary plus the actual doc
-  diff — you always see exactly what changed and why.
+- 🛡️ **A guardrail runs after** — the auditor's edits must stay inside YOUR doc allowlist and under
+  a churn budget (default 15 files / 800 lines), or every edit is reverted and the job fails.
+- 🧾 **Receipts included** — commit messages and PR bodies are built from the auditor's own summary
+  plus the actual doc diff, so you always see exactly what changed and why.
 
 ## Quickstart
 
@@ -76,7 +92,7 @@ All inputs are optional.
 | `claude-code-version` | `2.1.193` | Pinned `@anthropic-ai/claude-code` npm version |
 | `anthropic-base-url` | `https://openrouter.ai/api` | Model gateway base URL |
 | `model` | `z-ai/glm-5.2` | Main auditor model |
-| `small-model` | `z-ai/glm-4.6` | Background/summarization model |
+| `small-model` | `deepseek/deepseek-v4-flash` | Background/summarization model |
 | `use-bearer-auth` | `true` | `true`: OpenRouter-style bearer auth. `false`: Anthropic-native `ANTHROPIC_API_KEY` |
 
 ## Using Anthropic directly (instead of OpenRouter)
