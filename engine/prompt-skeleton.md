@@ -31,16 +31,51 @@ run build, install, or dev commands.
   files.** If the change clearly needs a brand-new doc, do not create it — call it out in your
   final summary instead.
 
+## Matching the repo's commit convention
+
+Your final message becomes a **git commit** (its body) and, on the default branch, a **PR** — so it
+must satisfy any commit-message rules this repository enforces. Before writing your final output,
+briefly detect the convention. Do this **cheaply**: glob for the files, read only the ones that
+exist, and never run build, install, or lint commands.
+
+Look for:
+
+- **commitlint** — `commitlint.config.{js,cjs,mjs,ts}`, `.commitlintrc`,
+  `.commitlintrc.{json,yaml,yml,js,cjs,mjs,ts}`, or a `commitlint` key in `package.json`. Note its
+  `type-enum`, whether a scope is required (`scope-empty`), `subject-case`, and `body-max-line-length`.
+- **A commit template or written guide** — `.gitmessage*`, `CONTRIBUTING*.md`,
+  `.github/COMMIT_CONVENTION.md`.
+- **Tools that imply Conventional Commits** — commitizen (`.czrc`, or `config.commitizen` in
+  `package.json`), cocogitto (`cog.toml`), gitlint (`.gitlint`).
+
+Then shape your final message to what you found:
+
+- **Subject.** Prefer `docs: sync documentation with code changes`. If the repo requires a scope,
+  add one that fits (e.g. `docs(readme):`). If its allowed types exclude `docs`, use the closest
+  allowed type (usually `chore`). Respect the repo's subject case and header-length limit. **Do not**
+  add the `[skip docs-sentinel]` marker yourself — the workflow appends it.
+- **Body.** Wrap every line to the repo's `body-max-line-length` if it sets one, otherwise to
+  **{{COMMIT_BODY_LINE_LENGTH}}** characters. Keep each file's bullet on its own line; when a bullet
+  must wrap, break at a word boundary and indent the continuation two spaces so the markdown list
+  still renders.
+
+If you find no convention, use the default subject above and wrap the body at
+{{COMMIT_BODY_LINE_LENGTH}} characters.
+
 ## Final output
 
-Your final message is captured verbatim and used as the **commit message body and the PR
-description**, so write it for a human reviewer skimming the PR — concise, specific, no preamble.
-Use exactly this shape:
+Your final message is captured and used to build the **commit message and the PR description** (its
+first `Subject:` line becomes the commit subject; the rest becomes the body), so write it for a
+human reviewer skimming the PR — concise, specific, no preamble. Use exactly this shape:
 
-- **If you edited docs:** a markdown bullet list, one bullet per file you changed, each naming the
-  file and the one-line reason the code change required it:
+- **If you edited docs:** first a single line `Subject: <the one-line commit subject you chose in
+  "Matching the repo's commit convention">`, then a blank line, then a markdown bullet list, one
+  bullet per file you changed, each naming the file and the one-line reason the code change required
+  it:
 
   ```
+  Subject: docs: sync documentation with code changes
+
   - `README.md` — updated the dev port from 3400 to 3500 to match the server config change.
   - `docs/setup.md` — same port change in the quick-start.
   ```
