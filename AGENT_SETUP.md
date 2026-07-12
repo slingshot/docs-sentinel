@@ -69,6 +69,9 @@ Notes:
   [README → Inputs](https://github.com/slingshot/docs-sentinel#inputs).
 - If the repo pays for Anthropic directly instead of OpenRouter, use the
   [Anthropic-native recipe](https://github.com/slingshot/docs-sentinel#using-anthropic-directly-instead-of-openrouter).
+- The sync commit auto-matches your repo's commit convention (commitlint, commit templates,
+  commitizen/cocogitto/gitlint); `commit-body-line-length` (default 100) tunes the fallback body
+  wrap for repos with no detectable convention.
 
 ## Step 3 — Write the policy file
 

@@ -30,6 +30,9 @@ any documentation the change made inaccurate, and fixes it — surgically.
   a churn budget (default 15 files / 800 lines), or every edit is reverted and the job fails.
 - 🧾 **Receipts included** — commit messages and PR bodies are built from the auditor's own summary
   plus the actual doc diff, so you always see exactly what changed and why.
+- ✍️ **Convention-aware commits** — the auditor detects your commit rules (commitlint config, commit
+  templates, commitizen/cocogitto/gitlint) and shapes the sync commit's subject and body to match;
+  `commit-body-line-length` (default 100) is the fallback wrap for repos with no convention.
 
 ## Quickstart
 
@@ -99,6 +102,7 @@ All inputs are optional.
 | `denylist-regex` | `(^\|/)CHANGELOG\.md$` | Forbidden even if allowlisted |
 | `file-budget` | `15` | Max files the auditor may change |
 | `line-budget` | `800` | Max total changed lines |
+| `commit-body-line-length` | `100` | Fallback max chars per commit-body line when the repo has no detectable commit convention (the auditor matches the repo's own `body-max-line-length` when it finds one) |
 | `skip-if-only-regex` | docs/tests + common lockfiles | Gate skips (no model call) when EVERY changed file matches |
 | `diff-exclude` | common lockfiles | File patterns excluded from the diff text shown to the auditor |
 | `sync-branch` | `docs/sync` | Fixed branch for the rolling docs-sync PR |
