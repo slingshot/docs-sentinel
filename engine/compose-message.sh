@@ -24,6 +24,31 @@ if [ -n "$SUMMARY_PATH" ] && [ -s "$SUMMARY_PATH" ]; then
   SUMMARY=$(cat "$SUMMARY_PATH")
 fi
 
+# Split an optional leading "Subject: <one line>" off the auditor's summary. The auditor emits it
+# only in its "edited docs" output shape; the remainder is the commit/PR body prose. Everything
+# structural (the type-shape fallback, the skip marker) stays shell-owned below.
+DEFAULT_SUBJECT="docs: sync documentation with code changes"
+SUBJECT=""
+BODY_SUMMARY="$SUMMARY"
+if [ -n "$SUMMARY" ]; then
+  first="${SUMMARY%%$'\n'*}"                       # first line (whole string if no newline)
+  case "$first" in
+    "Subject: "*)
+      SUBJECT="${first#Subject: }"
+      # Drop line 1 and, if present, a single blank separator line after it.
+      BODY_SUMMARY="$(printf '%s\n' "$SUMMARY" | awk 'NR==1{next} NR==2 && $0==""{next} {print}')"
+      ;;
+  esac
+fi
+
+# Validate the subject: single line, non-empty, within the conventional header cap (100). The skip
+# marker is no longer part of the subject, so the whole budget is the auditor's. Fall back to the
+# static subject on anything unusable, so a malformed line can never become the commit header.
+SUBJECT="$(printf '%s' "$SUBJECT" | tr -d '\r\n')"
+if [ -z "$SUBJECT" ] || [ "${#SUBJECT}" -gt 100 ]; then
+  SUBJECT="$DEFAULT_SUBJECT"
+fi
+
 short="${SHA:0:12}"
 
 # The auditor's edits are still uncommitted, so `git diff` over the edited docs gives the ACTUAL
@@ -53,10 +78,10 @@ fi
   # shellcheck disable=SC2016
   if [ -n "$SHA" ]; then printf ' in `%s`' "$short"; fi
   printf '.\n\n'
-  if [ -n "$SUMMARY" ]; then
+  if [ -n "$BODY_SUMMARY" ]; then
     echo "**What changed and why**"
     echo
-    echo "$SUMMARY"
+    echo "$BODY_SUMMARY"
     echo
   fi
   echo "**Files updated**"
@@ -80,16 +105,20 @@ fi
 } > "$BODY"
 
 # ── git commit message (subject + body) ─────────────────────────────────────
-# The [skip docs-sentinel] marker keeps the gate from auditing our own sync commit.
+# Subject comes from the auditor (validated above, static fallback). The [skip docs-sentinel] marker
+# is a FOOTER trailer, not part of the subject, so it never trips a header-length or subject rule —
+# the gate greps the whole message, so a footer marker still keeps it from auditing our sync commit.
 {
-  echo "docs: sync documentation with code changes [skip docs-sentinel]"
+  echo "$SUBJECT"
   echo
-  if [ -n "$SUMMARY" ]; then
-    echo "$SUMMARY"
+  if [ -n "$BODY_SUMMARY" ]; then
+    echo "$BODY_SUMMARY"
     echo
   fi
   echo "Files updated:"
   sed 's/^/  - /' "$FILES_PATH"
+  echo
+  echo "[skip docs-sentinel]"
 } > "$COMMIT"
 
 # Random heredoc delimiter: the commit message embeds LLM-generated summary text, and a
@@ -98,6 +127,7 @@ DELIM="__DOCS_SENTINEL_MSG_$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')__"
 {
   echo "commit_path=$COMMIT"
   echo "body_path=$BODY"
+  echo "pr_title=$SUBJECT"
   echo "commit_message<<$DELIM"
   cat "$COMMIT"
   echo "$DELIM"
