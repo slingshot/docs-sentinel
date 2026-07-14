@@ -107,7 +107,7 @@ All inputs are optional.
 | `diff-exclude` | common lockfiles | File patterns excluded from the diff text shown to the auditor |
 | `sync-branch` | `docs/sync` | Fixed branch for the rolling docs-sync PR |
 | `runner` | `ubuntu-latest` | Runner label for all jobs |
-| `claude-code-version` | `2.1.193` | Pinned `@anthropic-ai/claude-code` npm version |
+| `claude-code-version` | `2.1.209` | Pinned `@anthropic-ai/claude-code` npm version |
 | `anthropic-base-url` | `https://openrouter.ai/api` | Model gateway base URL |
 | `model` | `z-ai/glm-5.2` | Main auditor model |
 | `small-model` | `deepseek/deepseek-v4-flash` | Background/summarization model |

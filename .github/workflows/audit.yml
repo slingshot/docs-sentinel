@@ -3,7 +3,7 @@ name: Docs Sentinel
 # Reusable workflow: audits each change's code diff and keeps the calling repo's documentation in
 # sync with it. On a PR it commits doc fixes to the PR branch AND always leaves a single, sticky
 # status comment (upserted by a hidden marker). On a push to the default branch it maintains ONE
-# rolling, dependabot-style draft PR on a fixed sync branch — recreated from the current tip every
+# rolling, dependabot-style PR on a fixed sync branch — recreated from the current tip every
 # run, so it is always rebased (no stale per-SHA PRs piling up). The commit message, PR body, and
 # PR comment are built from the auditor's own summary of what it changed PLUS the actual doc diff.
 #
@@ -60,7 +60,7 @@ on:
       claude-code-version:
         description: Pinned @anthropic-ai/claude-code npm version
         type: string
-        default: '2.1.193'
+        default: '2.1.209'
       anthropic-base-url:
         description: Gateway base URL (empty = Anthropic default endpoint)
         type: string
@@ -566,12 +566,12 @@ jobs:
         with:
           token: ${{ secrets.SYNC_PR_TOKEN || github.token }}
           # Fixed branch (not per-SHA): recreated from the CURRENT tip on every run, so there is
-          # ONE rolling, always-rebased draft PR — dependabot-style. delete-branch tidies up once
+          # ONE rolling, always-rebased PR — dependabot-style. delete-branch tidies up once
           # it merges or goes empty.
           branch: ${{ inputs.sync-branch }}
           delete-branch: true
           base: ${{ github.ref_name }}
-          draft: true
+          draft: false
           commit-message: ${{ steps.compose.outputs.commit_message }}
           title: ${{ steps.compose.outputs.pr_title }}
           body-path: ${{ steps.compose.outputs.body_path }}
