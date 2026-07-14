@@ -37,6 +37,10 @@ on:
         description: Max total changed lines before the auditor's edits are reverted
         type: string
         default: '800'
+      commit-body-line-length:
+        description: Fallback max characters per commit-body line when the repo has no detectable commit convention (the auditor honors the repo's own body-max-line-length when it finds one)
+        type: string
+        default: '100'
       skip-if-only-regex:
         description: ERE — the gate skips the audit when EVERY changed file matches
         type: string
@@ -266,6 +270,7 @@ jobs:
       - name: Run docs auditor (Claude Code CLI)
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
+          COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
         run: |
           set -euo pipefail
           # Install via npm (not bun) so the postinstall that fetches the native binary runs.
@@ -273,7 +278,14 @@ jobs:
           npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
           export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
           claude --version
+          # Fallback commit-body line width injected into the prompt; validate before substituting.
+          LINE_MAX="${COMMIT_BODY_LINE_LENGTH:-100}"
+          if ! printf '%s' "$LINE_MAX" | grep -qE '^[1-9][0-9]*$'; then
+            echo "::error::commit-body-line-length must be a positive integer (got '$LINE_MAX')."; exit 1
+          fi
           cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
+          sed "s/{{COMMIT_BODY_LINE_LENGTH}}/$LINE_MAX/g" "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/prompt.md.tmp"
+          mv "$RUNNER_TEMP/prompt.md.tmp" "$RUNNER_TEMP/prompt.md"
           # --output-format json so we can lift the auditor's final summary into the commit
           # message + PR body in a later step, instead of boilerplate.
           set +e
@@ -493,12 +505,20 @@ jobs:
       - name: Run docs auditor (Claude Code CLI)
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
+          COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
         run: |
           set -euo pipefail
           npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
           export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
           claude --version
+          # Fallback commit-body line width injected into the prompt; validate before substituting.
+          LINE_MAX="${COMMIT_BODY_LINE_LENGTH:-100}"
+          if ! printf '%s' "$LINE_MAX" | grep -qE '^[1-9][0-9]*$'; then
+            echo "::error::commit-body-line-length must be a positive integer (got '$LINE_MAX')."; exit 1
+          fi
           cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
+          sed "s/{{COMMIT_BODY_LINE_LENGTH}}/$LINE_MAX/g" "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/prompt.md.tmp"
+          mv "$RUNNER_TEMP/prompt.md.tmp" "$RUNNER_TEMP/prompt.md"
           set +e
           claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
             --allowed-tools "Read,Edit,Grep,Glob,Bash(git diff:*)" \
@@ -553,5 +573,5 @@ jobs:
           base: ${{ github.ref_name }}
           draft: true
           commit-message: ${{ steps.compose.outputs.commit_message }}
-          title: "docs: sync documentation with code changes"
+          title: ${{ steps.compose.outputs.pr_title }}
           body-path: ${{ steps.compose.outputs.body_path }}
