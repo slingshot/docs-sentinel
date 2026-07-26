@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # Keep GitHub Actions current so SHA-pinned actions don't rot and floating major tags get
+  # reviewed bumps rather than implicit ones. Runner deprecations (e.g. the Node 20 -> 24
+  # migration) land here first, so this is the early-warning channel for CI breakage.
+  #
+  # Caveat: the github-actions ecosystem only tracks `uses: owner/repo@ref`. The actionlint
+  # step in ci.yml uses a `docker://` reference, which Dependabot does not update — bump
+  # rhysd/actionlint by hand.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    commit-message:
+      # This repo's history uses bare conventional-commit types (no scopes) -> "ci: bump …".
+      prefix: ci

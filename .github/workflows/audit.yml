@@ -60,7 +60,7 @@ on:
       claude-code-version:
         description: Pinned @anthropic-ai/claude-code npm version
         type: string
-        default: '2.1.209'
+        default: '2.1.220'
       anthropic-base-url:
         description: Gateway base URL (empty = Anthropic default endpoint)
         type: string
@@ -103,7 +103,7 @@ jobs:
       # not_configured | skip_marker | no_source_changes | '' (empty when run=true)
       skip_reason: ${{ steps.decide.outputs.skip_reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -188,7 +188,7 @@ jobs:
       group: docs-sentinel-pr-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}          # PR branch tip so we can push back
           fetch-depth: 0                        # default GITHUB_TOKEN creds -> push does NOT re-trigger CI
@@ -336,7 +336,7 @@ jobs:
       # Always leave a single, sticky status comment — drift or not — so every PR shows the
       # docs-sentinel result instead of going silent when there's nothing to fix.
       - name: Post docs-sentinel status comment (sticky)
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           CHANGED: ${{ steps.guard.outputs.changed }}
           BODY_PATH: ${{ steps.compose.outputs.body_path }}
@@ -391,7 +391,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Post docs-sentinel status comment (sticky)
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const marker = '<!-- docs-sentinel-status -->';
@@ -427,7 +427,7 @@ jobs:
       group: docs-sentinel-main
       cancel-in-progress: false               # never cancel a half-opened PR
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
