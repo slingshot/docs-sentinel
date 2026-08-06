@@ -13,7 +13,8 @@ name: Docs Sentinel
 #
 # Default model routing is DeepSeek V4 Flash via OpenRouter (Anthropic-compatible endpoint, bearer
 # auth). Both tiers use the '~...-latest' floating alias, so they track DeepSeek's current Flash
-# build rather than a pinned dated one — pass an explicit slug to pin. For Anthropic-native auth:
+# build rather than a pinned dated one — pass an explicit slug to pin. Reasoning runs at `high`
+# effort on every tier; see the effort and model-capabilities inputs. For Anthropic-native auth:
 # use-bearer-auth: false, anthropic-base-url: '', model: '', small-model: ''.
 
 on:
@@ -75,6 +76,14 @@ on:
         description: Haiku-tier / background model slug (empty = Claude Code defaults)
         type: string
         default: '~deepseek/deepseek-v4-flash-latest'
+      effort:
+        description: 'Reasoning effort for every tier: low|medium|high|xhigh|max|auto (empty = leave to the model/gateway default)'
+        type: string
+        default: 'high'
+      model-capabilities:
+        description: Comma-separated CLAUDE capabilities declared for the pinned models. Claude Code gates reasoning by pattern-matching the model ID, so a gateway slug needs this or effort/thinking stay off. Empty = fall back to Claude Code's built-in detection.
+        type: string
+        default: 'effort,thinking,adaptive_thinking,interleaved_thinking'
       use-bearer-auth:
         description: 'true: MODEL_API_KEY -> ANTHROPIC_AUTH_TOKEN (OpenRouter-style). false: -> ANTHROPIC_API_KEY (Anthropic-native)'
         type: boolean
@@ -233,6 +242,8 @@ jobs:
           BASE_URL: ${{ inputs.anthropic-base-url }}
           MODEL: ${{ inputs.model }}
           SMALL: ${{ inputs.small-model }}
+          EFFORT: ${{ inputs.effort }}
+          CAPS: ${{ inputs.model-capabilities }}
           USE_BEARER: ${{ inputs.use-bearer-auth }}
           MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
         run: |
@@ -255,6 +266,31 @@ jobs:
               echo "ANTHROPIC_DEFAULT_HAIKU_MODEL=$SMALL"
               echo "ANTHROPIC_SMALL_FAST_MODEL=$SMALL"
             } >> "$GITHUB_ENV"
+          fi
+          # Reasoning. Claude Code decides whether a model can think by pattern-matching the
+          # model ID against known Anthropic families, so a gateway slug lands in the "no
+          # reasoning" bucket and effort is silently ignored. Declaring capabilities per pinned
+          # tier opts the model back in. xhigh_effort/max_effort are deliberately absent from
+          # the default set: deepseek-v4-flash advertises no xhigh, and leaving them out makes
+          # Claude Code clamp its own xhigh default down to high.
+          if [ -n "$CAPS" ]; then
+            if [ -n "$MODEL" ]; then
+              {
+                echo "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES=$CAPS"
+                echo "ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES=$CAPS"
+                echo "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES=$CAPS"
+              } >> "$GITHUB_ENV"
+            fi
+            if [ -n "$SMALL" ]; then
+              echo "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES=$CAPS" >> "$GITHUB_ENV"
+            fi
+          fi
+          if [ -n "$EFFORT" ]; then
+            case "$EFFORT" in
+              low|medium|high|xhigh|max|auto) ;;
+              *) echo "::error::effort must be low|medium|high|xhigh|max|auto (got '$EFFORT')."; exit 1 ;;
+            esac
+            echo "CLAUDE_CODE_EFFORT_LEVEL=$EFFORT" >> "$GITHUB_ENV"
           fi
           if [ "$USE_BEARER" = "true" ]; then
             echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"
@@ -471,6 +507,8 @@ jobs:
           BASE_URL: ${{ inputs.anthropic-base-url }}
           MODEL: ${{ inputs.model }}
           SMALL: ${{ inputs.small-model }}
+          EFFORT: ${{ inputs.effort }}
+          CAPS: ${{ inputs.model-capabilities }}
           USE_BEARER: ${{ inputs.use-bearer-auth }}
           MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
         run: |
@@ -490,6 +528,31 @@ jobs:
               echo "ANTHROPIC_DEFAULT_HAIKU_MODEL=$SMALL"
               echo "ANTHROPIC_SMALL_FAST_MODEL=$SMALL"
             } >> "$GITHUB_ENV"
+          fi
+          # Reasoning. Claude Code decides whether a model can think by pattern-matching the
+          # model ID against known Anthropic families, so a gateway slug lands in the "no
+          # reasoning" bucket and effort is silently ignored. Declaring capabilities per pinned
+          # tier opts the model back in. xhigh_effort/max_effort are deliberately absent from
+          # the default set: deepseek-v4-flash advertises no xhigh, and leaving them out makes
+          # Claude Code clamp its own xhigh default down to high.
+          if [ -n "$CAPS" ]; then
+            if [ -n "$MODEL" ]; then
+              {
+                echo "ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES=$CAPS"
+                echo "ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES=$CAPS"
+                echo "ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES=$CAPS"
+              } >> "$GITHUB_ENV"
+            fi
+            if [ -n "$SMALL" ]; then
+              echo "ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES=$CAPS" >> "$GITHUB_ENV"
+            fi
+          fi
+          if [ -n "$EFFORT" ]; then
+            case "$EFFORT" in
+              low|medium|high|xhigh|max|auto) ;;
+              *) echo "::error::effort must be low|medium|high|xhigh|max|auto (got '$EFFORT')."; exit 1 ;;
+            esac
+            echo "CLAUDE_CODE_EFFORT_LEVEL=$EFFORT" >> "$GITHUB_ENV"
           fi
           if [ "$USE_BEARER" = "true" ]; then
             echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"

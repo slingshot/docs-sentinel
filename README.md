@@ -111,11 +111,21 @@ All inputs are optional.
 | `anthropic-base-url` | `https://openrouter.ai/api` | Model gateway base URL |
 | `model` | `~deepseek/deepseek-v4-flash-latest` | Main auditor model |
 | `small-model` | `~deepseek/deepseek-v4-flash-latest` | Background/summarization model |
+| `effort` | `high` | Reasoning effort for every tier (`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`auto`; empty = model default) |
+| `model-capabilities` | `effort,thinking,adaptive_thinking,interleaved_thinking` | Capabilities declared for the pinned models (empty = Claude Code's built-in detection) |
 | `use-bearer-auth` | `true` | `true`: OpenRouter-style bearer auth. `false`: Anthropic-native `ANTHROPIC_API_KEY` |
 
 The leading `~` is OpenRouter's marker for a *floating* alias: `~deepseek/deepseek-v4-flash-latest`
 follows DeepSeek's current Flash build, so the auditor stays current without a bump here. Pass a
 dated slug (e.g. `deepseek/deepseek-v4-flash-0731`) if you'd rather pin it.
+
+`model-capabilities` exists because Claude Code decides whether a model can reason by
+pattern-matching the model ID against known Anthropic families — a gateway slug matches nothing,
+so effort and thinking are switched off no matter what the model supports. Declaring the
+capabilities opts the pinned models back in and lets `effort` take hold. `xhigh_effort` and
+`max_effort` are deliberately left out: DeepSeek V4 Flash advertises no `xhigh`, and omitting them
+makes Claude Code clamp its own `xhigh` default down to `high`. Point this at a model without
+reasoning and you should clear the input.
 
 ## Using Anthropic directly (instead of OpenRouter)
 
@@ -127,7 +137,13 @@ dated slug (e.g. `deepseek/deepseek-v4-flash-0731`) if you'd rather pin it.
       anthropic-base-url: ''     # clear the gateway -> Anthropic's endpoint
       model: ''                  # clear the slugs -> Claude Code's default models
       small-model: ''
+      effort: xhigh              # optional: Claude Code's own default for Anthropic models
 ```
+
+`effort` applies independently of model routing, so the `high` default still takes effect here —
+set it to `xhigh` if you'd rather keep Claude Code's native default on Anthropic models.
+`model-capabilities` is inert on this path: it's only emitted for pinned model slugs, and clearing
+`model` / `small-model` leaves Claude Code's built-in detection in charge.
 
 Any Anthropic-compatible gateway works the same way: point `anthropic-base-url` at it and set
 `model` / `small-model` to its slugs.
