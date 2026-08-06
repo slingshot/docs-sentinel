@@ -11,8 +11,10 @@ name: Docs Sentinel
 # job.workflow_sha — the exact commit of this workflow file the caller pinned — so consumer
 # workspaces stay pristine and engine and workflow can never skew.
 #
-# Default model routing is GLM via OpenRouter (Anthropic-compatible endpoint, bearer auth). For
-# Anthropic-native auth: use-bearer-auth: false, anthropic-base-url: '', model: '', small-model: ''.
+# Default model routing is DeepSeek V4 Flash via OpenRouter (Anthropic-compatible endpoint, bearer
+# auth). Both tiers use the '~...-latest' floating alias, so they track DeepSeek's current Flash
+# build rather than a pinned dated one — pass an explicit slug to pin. For Anthropic-native auth:
+# use-bearer-auth: false, anthropic-base-url: '', model: '', small-model: ''.
 
 on:
   workflow_call:
@@ -60,7 +62,7 @@ on:
       claude-code-version:
         description: Pinned @anthropic-ai/claude-code npm version
         type: string
-        default: '2.1.220'
+        default: '2.1.223'
       anthropic-base-url:
         description: Gateway base URL (empty = Anthropic default endpoint)
         type: string
@@ -68,11 +70,11 @@ on:
       model:
         description: Main session model slug (empty = Claude Code defaults)
         type: string
-        default: 'z-ai/glm-5.2'
+        default: '~deepseek/deepseek-v4-flash-latest'
       small-model:
         description: Haiku-tier / background model slug (empty = Claude Code defaults)
         type: string
-        default: 'deepseek/deepseek-v4-flash'
+        default: '~deepseek/deepseek-v4-flash-latest'
       use-bearer-auth:
         description: 'true: MODEL_API_KEY -> ANTHROPIC_AUTH_TOKEN (OpenRouter-style). false: -> ANTHROPIC_API_KEY (Anthropic-native)'
         type: boolean

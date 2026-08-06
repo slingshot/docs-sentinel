@@ -107,11 +107,15 @@ All inputs are optional.
 | `diff-exclude` | common lockfiles | File patterns excluded from the diff text shown to the auditor |
 | `sync-branch` | `docs/sync` | Fixed branch for the rolling docs-sync PR |
 | `runner` | `ubuntu-latest` | Runner label for all jobs |
-| `claude-code-version` | `2.1.220` | Pinned `@anthropic-ai/claude-code` npm version |
+| `claude-code-version` | `2.1.223` | Pinned `@anthropic-ai/claude-code` npm version |
 | `anthropic-base-url` | `https://openrouter.ai/api` | Model gateway base URL |
-| `model` | `z-ai/glm-5.2` | Main auditor model |
-| `small-model` | `deepseek/deepseek-v4-flash` | Background/summarization model |
+| `model` | `~deepseek/deepseek-v4-flash-latest` | Main auditor model |
+| `small-model` | `~deepseek/deepseek-v4-flash-latest` | Background/summarization model |
 | `use-bearer-auth` | `true` | `true`: OpenRouter-style bearer auth. `false`: Anthropic-native `ANTHROPIC_API_KEY` |
+
+The leading `~` is OpenRouter's marker for a *floating* alias: `~deepseek/deepseek-v4-flash-latest`
+follows DeepSeek's current Flash build, so the auditor stays current without a bump here. Pass a
+dated slug (e.g. `deepseek/deepseek-v4-flash-0731`) if you'd rather pin it.
 
 ## Using Anthropic directly (instead of OpenRouter)
 
