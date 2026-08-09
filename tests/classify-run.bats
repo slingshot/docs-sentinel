@@ -40,6 +40,13 @@ run_classify() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
   [[ "$output" == *"malformed"* ]] || return 1
 }
 
+@test "a trailing blank line is not treated as malformed" {
+  write_stream success false
+  printf '\n' >> "$STREAM"
+  run_classify
+  [ "$status" -eq 0 ] || return 1
+}
+
 @test "missing terminal result event -> exit 1" {
   {
     echo '{"type":"system","subtype":"init"}'

@@ -18,7 +18,9 @@ fail() { echo "$1"; exit 1; }
 
 # Every line must parse. A truncated tail is the signature of a killed or disconnected run, and it
 # is precisely the case where a syntactically valid earlier message could be mistaken for a verdict.
-total=$(grep -c '' "$STREAM_PATH" || true)
+# Only non-blank lines are counted, so a trailing newline the gateway happens to emit is not
+# mistaken for a truncated/malformed line.
+total=$(grep -c '[^[:space:]]' "$STREAM_PATH" || true)
 parsed=$(jq -Rc 'fromjson? // empty' "$STREAM_PATH" 2>/dev/null | grep -c '' || true)
 [ "$total" -eq "$parsed" ] || fail "malformed or truncated JSONL ($parsed/$total lines parsed)"
 
