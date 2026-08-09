@@ -22,7 +22,11 @@ total=$(grep -c '' "$STREAM_PATH" || true)
 parsed=$(jq -Rc 'fromjson? // empty' "$STREAM_PATH" 2>/dev/null | grep -c '' || true)
 [ "$total" -eq "$parsed" ] || fail "malformed or truncated JSONL ($parsed/$total lines parsed)"
 
-RESULTS=$(jq -Rc 'fromjson? // empty' "$STREAM_PATH" | jq -sc '[.[] | select(.type == "result")]')
+# Every parsed value must be an object (the event stream format)
+parsed_objects=$(jq -Rc 'fromjson? // empty | select(type == "object") // empty' "$STREAM_PATH" 2>/dev/null | grep -c '' || true)
+[ "$parsed_objects" -eq "$parsed" ] || fail "stream contains non-object JSON values ($parsed_objects/$parsed are objects)"
+
+RESULTS=$(jq -Rc 'fromjson? // empty' "$STREAM_PATH" | jq -sc '[.[] | select(type == "object" and .type == "result")]')
 
 n=$(printf '%s' "$RESULTS" | jq 'length')
 [ "$n" -eq 1 ] || fail "expected exactly one terminal result event, found $n"

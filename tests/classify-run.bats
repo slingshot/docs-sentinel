@@ -70,3 +70,22 @@ run_classify() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
   [ "$status" -eq 1 ]
   [[ "$output" == *"api_error_status"* ]]
 }
+
+@test "two terminal result events -> exit 1" {
+  write_stream success false
+  echo '{"type":"result","subtype":"success","is_error":false}' >> "$STREAM"
+  run_classify
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"found 2"* ]]
+}
+
+@test "valid JSON that is not an object -> exit 1 with a reason on stdout" {
+  {
+    echo '{"type":"system","subtype":"init"}'
+    echo 'true'
+    echo '{"type":"result","subtype":"success","is_error":false}'
+  } > "$STREAM"
+  run_classify
+  [ "$status" -eq 1 ]
+  [ -n "$output" ]
+}
