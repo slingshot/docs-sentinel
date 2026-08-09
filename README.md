@@ -22,7 +22,7 @@ any documentation the change made inaccurate, and fixes it — surgically.
 
 - 🔧 **On a PR** — doc fixes are committed straight to the PR branch, and one sticky status comment
   reports the result: drift found and fixed, or "no drift" (never silence, never comment spam).
-- 🔁 **On a push to your default branch** — it maintains a single rolling draft **docs-sync PR**
+- 🔁 **On a push to your default branch** — it maintains a single rolling **docs-sync PR**
   (dependabot-style: one fixed branch, always rebased, accumulates un-merged fixes).
 - 🚦 **A gate runs first** — you never pay for model calls on docs-only, test-only, or
   lockfile-only changes.
@@ -162,20 +162,32 @@ Any Anthropic-compatible gateway works the same way: point `anthropic-base-url` 
    ┌────────────────────────┐                  ┌────────────────────────┐
    │ audit-pr               │                  │ audit-main             │
    │ diff context → auditor │                  │ same audit …           │
-   │ → guardrail → commit   │                  │ → rolling draft        │
+   │ → guardrail → commit   │                  │ → rolling              │
    │ to PR branch + sticky  │                  │ docs-sync PR (one      │
    │ status comment         │                  │ branch, always rebased)│
    └────────────────────────┘                  └────────────────────────┘
 ```
 
 The auditor is the [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI run
-non-interactively with a locked-down tool set (`Read`, `Edit`, `Grep`, `Glob`, read-only
-`git diff`) — it cannot run builds, create files, or touch the network. The prompt is a generic
+non-interactively with a locked-down tool set (`Read`, `Edit`, `Grep`, `Glob`) and no shell
+access — it cannot run commands, create files, or touch the network. The prompt is a generic
 skeleton ([`engine/prompt-skeleton.md`](engine/prompt-skeleton.md)) concatenated with your policy
 file. After it runs, [`engine/guardrail.sh`](engine/guardrail.sh) mechanically enforces your
 allowlist and churn budgets — a misbehaving model gets its edits reverted, not merged.
 
 ## Degradation modes
+
+| Situation | What you get |
+|---|---|
+| Drift found and fixed | Doc fixes committed, sticky comment with the doc diff |
+| No drift | Sticky comment: "no documentation drift detected" |
+| Change touches no source files | Sticky comment: skipped |
+| Auditor ran but its summary was unusable | Sticky comment: **inconclusive**. Any doc edits still land — they passed the guardrail — but the change was not confirmed drift-free. Retried once before reporting. |
+| Auditor did not complete (crash, timeout, provider error) | Sticky comment: **inconclusive**. All edits are discarded, because a half-finished edit set can pass the guardrail while making no sense. |
+| Setup failed before the audit | Sticky comment: could not run |
+
+docs-sentinel never reports "no drift" unless the audit actually completed and produced a summary
+that agrees with what it changed.
 
 - **No `MODEL_API_KEY`:** the gate no-ops with a log line. Merge the caller first, add the key later.
 - **No `SYNC_PR_TOKEN`:** the docs-sync PR opens via `GITHUB_TOKEN` with a warning; its CI checks
