@@ -191,7 +191,10 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && github.event_name == 'pull_request'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 25
+    # Comfortably above the 20-minute auditor STEP timeout below: a hung attempt must fail the
+    # STEP (letting guardrail/compose/commit/render still run) rather than cancel the JOB, which
+    # would skip even `if: ${{ !cancelled() }}` steps and post no comment at all.
+    timeout-minutes: 35
     permissions:
       contents: write
       pull-requests: write
@@ -485,7 +488,10 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && github.event_name == 'push'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 25
+    # Comfortably above the 20-minute auditor STEP timeout below: a hung attempt must fail the
+    # STEP (letting guardrail/compose/render still run) rather than cancel the JOB, which would
+    # skip even `if: ${{ !cancelled() }}` steps and post no comment at all.
+    timeout-minutes: 35
     permissions:
       contents: write
       pull-requests: write
