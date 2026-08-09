@@ -77,6 +77,20 @@ run_validate() {
   [[ "$output" == *"bullet"* ]] || return 1
 }
 
+@test "state machine: Subject form that also claims no updates is rejected" {
+  printf 'Subject: docs: sync\n\n- `README.md` — port.\n\nNo documentation updates needed — actually nothing.\n' > "$SUMMARY"
+  run_validate 2
+  [ "$status" -eq 1 ] || return 1
+  [[ "$output" == *"claims no updates"* ]] || return 1
+}
+
+@test "EDITED_COUNT unset produces a one-line stdout reason and exit 1" {
+  echo 'No documentation updates needed — clean.' > "$SUMMARY"
+  run env -u EDITED_COUNT SUMMARY_PATH="$SUMMARY" RUNNER_TEMP="$RUNNER_TEMP" bash "$SCRIPT"
+  [ "$status" -eq 1 ] || return 1
+  [ -n "$output" ] || return 1
+}
+
 @test "byte cap enforced" {
   { echo 'No documentation updates needed — see below.'; head -c 9000 /dev/zero | tr '\0' 'x'; } > "$SUMMARY"
   run_validate 0

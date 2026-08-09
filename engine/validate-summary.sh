@@ -15,12 +15,12 @@
 # Exit 0 and print "ok" when usable; exit 1 and print a one-line reason otherwise.
 set -euo pipefail
 
-: "${SUMMARY_PATH:?SUMMARY_PATH not set}"
-: "${EDITED_COUNT:?EDITED_COUNT not set}"
+fail() { echo "$1"; exit 1; }
+
+[ -n "${SUMMARY_PATH:-}" ] || fail "SUMMARY_PATH not set"
+[ -n "${EDITED_COUNT:-}" ] || fail "EDITED_COUNT not set"
 LINE_CAP="${LINE_CAP:-60}"
 BYTE_CAP="${BYTE_CAP:-8192}"
-
-fail() { echo "$1"; exit 1; }
 
 if ! printf '%s' "$EDITED_COUNT" | grep -qE '^[0-9]+$'; then
   fail "EDITED_COUNT must be a non-negative integer (got '$EDITED_COUNT')"
@@ -28,8 +28,11 @@ fi
 
 [ -s "$SUMMARY_PATH" ] || fail "summary is empty"
 
-# Normalise line endings so a CRLF stream cannot defeat the anchored patterns below.
-NORM="${RUNNER_TEMP:-/tmp}/docs-sentinel-summary.norm"
+# Normalise line endings so a CRLF stream cannot defeat the anchored patterns below. The filename is
+# suffixed with $$ and removed on exit so concurrent invocations (no shared RUNNER_TEMP) don't clobber
+# each other's scratch file.
+NORM="${RUNNER_TEMP:-/tmp}/docs-sentinel-summary.$$.norm"
+trap 'rm -f "$NORM"' EXIT
 tr -d '\r' < "$SUMMARY_PATH" > "$NORM"
 
 if [ -z "$(tr -d '[:space:]' < "$NORM")" ]; then
