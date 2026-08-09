@@ -727,7 +727,7 @@ echo "ok"
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `bats tests/validate-summary.bats && shellcheck engine/validate-summary.sh`
-Expected: 12 tests pass, shellcheck silent.
+Expected: 11 tests pass, shellcheck silent.
 
 - [ ] **Step 5: Commit**
 
@@ -1350,8 +1350,11 @@ Create `engine/render-status.sh`:
 # Decide, and render, the single sticky status comment. Extracted from inline github-script so the
 # one rule that matters can be tested: an inconclusive audit must never render as a clean pass.
 #
+# There is deliberately no `skipped` outcome: the skip comment is posted by the comment-pr-skip
+# job, which cannot reach this script (see the plan's note on reusable-workflow checkout).
+#
 # Env contract:
-#   OUTCOME      (required)  fixed | clean | skipped | inconclusive | infra
+#   OUTCOME      (required)  fixed | clean | inconclusive | infra
 #   KIND         (optional)  for inconclusive: hygiene | execution | guardrail | push
 #   EDITS_LANDED (optional)  "true" when doc fixes were committed despite an inconclusive result
 #   REASON       (optional)  one-line explanation
@@ -1378,11 +1381,6 @@ case "$OUTCOME" in
     echo '🤖 **Docs audit** — no documentation drift detected.'
     echo
     if [ -n "$REASON" ]; then printf '%s\n\n' "$REASON"; fi
-    printf '%s\n' "$FOOTER"
-    ;;
-  skipped)
-    echo '🤖 **Docs audit** — skipped: this change touches no source files (docs, tests, or lockfiles only), so it cannot make any doc stale.'
-    echo
     printf '%s\n' "$FOOTER"
     ;;
   inconclusive)
@@ -1491,12 +1489,6 @@ render() {
   [[ "$output" == *"no documentation drift detected"* ]]
 }
 
-@test "skipped renders the skip wording" {
-  render skipped
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"skipped"* ]]
-}
-
 @test "fixed passes the composed body through verbatim" {
   render fixed "" "🤖 **Docs audit** updated documentation."
   [ "$status" -eq 0 ]
@@ -1523,7 +1515,7 @@ executing strictly TDD: write the test first, watch it fail, then add the script
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `bats tests/status-comment.bats && shellcheck engine/render-status.sh`
-Expected: 12 tests pass, shellcheck silent. If shellcheck reports **SC2016** on the
+Expected: 11 tests pass, shellcheck silent. If shellcheck reports **SC2016** on the
 ``printf 'Reason: `%s`\n\n'`` line, the `# shellcheck disable=SC2016` comment above it is missing or
 misplaced — it must sit on the line immediately preceding the `if`.
 
