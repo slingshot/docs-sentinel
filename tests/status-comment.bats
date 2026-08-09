@@ -40,7 +40,7 @@ render() {
 
 @test "failed push reads as unpushed, not as fixed" {
   render inconclusive "could not push" "" push
-  [[ "$output" == *"could not be pushed"* ]] || return 1
+  [[ "$output" == *"could not be committed"* ]] || return 1
 }
 
 @test "infra failure NEVER renders the no-drift heading" {

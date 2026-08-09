@@ -49,7 +49,7 @@ case "$OUTCOME" in
         echo 'The auditor edited files outside the documentation allowlist or exceeded the churn budget, so **every** edit was reverted.'
         ;;
       push)
-        echo 'Documentation fixes were produced, but they could not be pushed to this branch.'
+        echo 'Documentation fixes were produced, but they could not be committed to this branch.'
         ;;
       *)
         echo 'The auditor did not produce a usable result.'
