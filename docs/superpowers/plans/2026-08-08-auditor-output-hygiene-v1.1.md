@@ -451,10 +451,13 @@ FENCE_CLOSE='</docs-sentinel-summary>'
 
 # One JSON string per assistant message: its text blocks, in order, joined with a blank line.
 # `fromjson? // empty` skips a truncated tail line instead of aborting the whole parse.
+# `select(type == "object" and ...)` is required, not decorative: `.type` applied to a bare JSON
+# scalar is a jq ERROR, not a graceful null, so a stray `true` or a whole-file JSON array would
+# abort the script under `set -e` with jq's exit code instead of a clean message.
 MSGS=$(jq -Rc 'fromjson? // empty' "$STREAM_PATH" \
   | jq -sc '[ .[]
-              | select(.type == "assistant")
-              | [ .message.content[]? | select(.type == "text") | .text ]
+              | select(type == "object" and .type == "assistant")
+              | [ .message.content[]? | select(type == "object" and .type == "text") | .text ]
               | join("\n\n") ]')
 
 count=$(printf '%s' "$MSGS" | jq 'length')
