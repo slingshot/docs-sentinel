@@ -28,9 +28,26 @@ done
 # Drop the transient context file so downstream `git add -A` can never commit it.
 rm -f .docs-sentinel-context.md
 
-# Tracked modifications the auditor made, HEAD-relative so STAGED edits are caught too. It cannot
-# create files (Write is disallowed), so there are no untracked files to consider. (while-read, not
-# mapfile: bash 3.2 portability.)
+# The auditor is not permitted to create files. `git diff HEAD` below sees only TRACKED
+# modifications, so an untracked file would sail past every allowlist and budget check. This must
+# run before the "no tracked edits" early exit, or a create-only run would report changed=false.
+UNTRACKED=()
+while IFS= read -r f; do
+  if [ -n "$f" ]; then UNTRACKED+=("$f"); fi
+done < <(git ls-files --others --exclude-standard)
+
+if [ "${#UNTRACKED[@]}" -gt 0 ]; then
+  echo "::error::Auditor created untracked file(s) — it is not permitted to create files:"
+  printf '  %s\n' "${UNTRACKED[@]}"
+  echo "Reverting ALL auditor edits."
+  git reset -q --hard HEAD
+  git clean -ffdx
+  exit 1
+fi
+
+# Tracked modifications the auditor made, HEAD-relative so STAGED edits are caught too. Untracked
+# files are rejected outright above, so everything reaching here is a modification to a tracked
+# file. (while-read, not mapfile: bash 3.2 portability.)
 CHANGED=()
 while IFS= read -r f; do
   if [ -n "$f" ]; then CHANGED+=("$f"); fi
