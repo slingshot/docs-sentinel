@@ -11,10 +11,9 @@ in doubt, **make no edit** and mention the doubt in your final summary.
 ## What the code change was
 
 The list of changed files and the full unified diff for this change are in
-**`.docs-sentinel-context.md`** at the repository root. **Read that file first.** You may also run
-`git diff` (read-only) to inspect any file's changes in more detail. To confirm what a command,
-port, env var, or schema *actually* is now, read the source directly with Read/Grep/Glob — never
-run build, install, or dev commands.
+**`.docs-sentinel-context.md`** at the repository root. **Read that file first.** To confirm what a
+command, port, env var, or schema *actually* is now, read the source directly with Read/Grep/Glob —
+never run build, install, or dev commands. You have no shell access.
 
 ## How to edit
 

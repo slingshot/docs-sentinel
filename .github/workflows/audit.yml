@@ -244,8 +244,6 @@ jobs:
           SMALL: ${{ inputs.small-model }}
           EFFORT: ${{ inputs.effort }}
           CAPS: ${{ inputs.model-capabilities }}
-          USE_BEARER: ${{ inputs.use-bearer-auth }}
-          MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
         run: |
           set -euo pipefail
           # Claude Code resolves models per TIER; pointing it at a non-Anthropic gateway means
@@ -292,12 +290,6 @@ jobs:
             esac
             echo "CLAUDE_CODE_EFFORT_LEVEL=$EFFORT" >> "$GITHUB_ENV"
           fi
-          if [ "$USE_BEARER" = "true" ]; then
-            echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"
-            echo "ANTHROPIC_API_KEY=" >> "$GITHUB_ENV"
-          else
-            echo "ANTHROPIC_API_KEY=$MODEL_KEY" >> "$GITHUB_ENV"
-          fi
 
       - name: Build diff context
         env:
@@ -309,6 +301,8 @@ jobs:
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
           COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
+          ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
         run: |
           set -euo pipefail
           # Install via npm (not bun) so the postinstall that fetches the native binary runs.
@@ -328,7 +322,7 @@ jobs:
           # message + PR body in a later step, instead of boilerplate.
           set +e
           claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
-            --allowed-tools "Read,Edit,Grep,Glob,Bash(git diff:*)" \
+            --allowed-tools "Read,Edit,Grep,Glob" \
             --permission-mode acceptEdits \
             --output-format json > "$RUNNER_TEMP/auditor.json"
           status=$?
@@ -468,6 +462,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch docs-sentinel engine
         env:
@@ -509,8 +504,6 @@ jobs:
           SMALL: ${{ inputs.small-model }}
           EFFORT: ${{ inputs.effort }}
           CAPS: ${{ inputs.model-capabilities }}
-          USE_BEARER: ${{ inputs.use-bearer-auth }}
-          MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
         run: |
           set -euo pipefail
           if [ -n "$BASE_URL" ]; then echo "ANTHROPIC_BASE_URL=$BASE_URL" >> "$GITHUB_ENV"; fi
@@ -554,12 +547,6 @@ jobs:
             esac
             echo "CLAUDE_CODE_EFFORT_LEVEL=$EFFORT" >> "$GITHUB_ENV"
           fi
-          if [ "$USE_BEARER" = "true" ]; then
-            echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"
-            echo "ANTHROPIC_API_KEY=" >> "$GITHUB_ENV"
-          else
-            echo "ANTHROPIC_API_KEY=$MODEL_KEY" >> "$GITHUB_ENV"
-          fi
 
       - name: Build diff context
         env:
@@ -571,6 +558,8 @@ jobs:
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
           COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
+          ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
         run: |
           set -euo pipefail
           npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
@@ -586,7 +575,7 @@ jobs:
           mv "$RUNNER_TEMP/prompt.md.tmp" "$RUNNER_TEMP/prompt.md"
           set +e
           claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
-            --allowed-tools "Read,Edit,Grep,Glob,Bash(git diff:*)" \
+            --allowed-tools "Read,Edit,Grep,Glob" \
             --permission-mode acceptEdits \
             --output-format json > "$RUNNER_TEMP/auditor.json"
           status=$?
