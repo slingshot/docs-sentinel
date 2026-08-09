@@ -29,7 +29,7 @@ run_classify() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
   : > "$STREAM"
   run_classify
   [ "$status" -eq 1 ]
-  [[ "$output" == *"empty"* ]]
+  [[ "$output" == *"empty"* ]] || return 1
 }
 
 @test "truncated final line -> exit 1" {
@@ -37,7 +37,7 @@ run_classify() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
   printf '{"type":"result","subtype":"suc' >> "$STREAM"
   run_classify
   [ "$status" -eq 1 ]
-  [[ "$output" == *"malformed"* ]]
+  [[ "$output" == *"malformed"* ]] || return 1
 }
 
 @test "missing terminal result event -> exit 1" {
@@ -47,28 +47,28 @@ run_classify() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
   } > "$STREAM"
   run_classify
   [ "$status" -eq 1 ]
-  [[ "$output" == *"exactly one"* ]]
+  [[ "$output" == *"exactly one"* ]] || return 1
 }
 
 @test "is_error true -> exit 1" {
   write_stream success true
   run_classify
   [ "$status" -eq 1 ]
-  [[ "$output" == *"is_error"* ]]
+  [[ "$output" == *"is_error"* ]] || return 1
 }
 
 @test "non-success subtype -> exit 1" {
   write_stream error_max_turns false
   run_classify
   [ "$status" -eq 1 ]
-  [[ "$output" == *"error_max_turns"* ]]
+  [[ "$output" == *"error_max_turns"* ]] || return 1
 }
 
 @test "api_error_status present -> exit 1" {
   write_stream success false ',"api_error_status":429'
   run_classify
   [ "$status" -eq 1 ]
-  [[ "$output" == *"api_error_status"* ]]
+  [[ "$output" == *"api_error_status"* ]] || return 1
 }
 
 @test "two terminal result events -> exit 1" {
@@ -76,7 +76,7 @@ run_classify() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
   echo '{"type":"result","subtype":"success","is_error":false}' >> "$STREAM"
   run_classify
   [ "$status" -eq 1 ]
-  [[ "$output" == *"found 2"* ]]
+  [[ "$output" == *"found 2"* ]] || return 1
 }
 
 @test "valid JSON that is not an object -> exit 1 with a reason on stdout" {

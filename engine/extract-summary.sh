@@ -59,6 +59,13 @@ if [ "$opens" -ne 0 ] || [ "$closes" -ne 0 ]; then
     echo "unbalanced or duplicated docs-sentinel-summary fence (open=$opens close=$closes)" >&2
     exit 1
   fi
+  # Counts alone don't catch a swapped pair (close before open) — the text up to the FIRST close
+  # marker must contain the open marker, or the tags are out of order.
+  pre="${chosen%%"$FENCE_CLOSE"*}"
+  if ! printf '%s' "$pre" | grep -qF "$FENCE_OPEN"; then
+    echo "docs-sentinel-summary fence tags are out of order" >&2
+    exit 1
+  fi
   # index()-based, so the fence literals are matched as fixed strings, never as regex.
   chosen=$(printf '%s\n' "$chosen" | awk -v o="$FENCE_OPEN" -v c="$FENCE_CLOSE" '
     BEGIN { inb = 0 }

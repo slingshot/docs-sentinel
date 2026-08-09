@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
+
 SCRIPT="$BATS_TEST_DIRNAME/../engine/extract-summary.sh"
 
 setup() {
@@ -14,15 +16,13 @@ run_extract() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
 
 @test "keeps text blocks and discards thinking and tool_use" {
   : > "$STREAM"
-  assistant '[{"type":"thinking","thinking":"let me reconsider whether to edit"},
-              {"type":"tool_use","id":"t1","name":"Read","input":{}},
-              {"type":"text","text":"Subject: docs: sync"}]'
+  assistant '[{"type":"thinking","thinking":"let me reconsider whether to edit"},{"type":"tool_use","id":"t1","name":"Read","input":{}},{"type":"text","text":"Subject: docs: sync"}]'
   echo '{"type":"result","subtype":"success","is_error":false}' >> "$STREAM"
   run_extract
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Subject: docs: sync"* ]]
-  [[ "$output" != *"reconsider"* ]]
-  [[ "$output" != *"tool_use"* ]]
+  [[ "$output" == *"Subject: docs: sync"* ]] || return 1
+  [[ "$output" != *"reconsider"* ]] || return 1
+  [[ "$output" != *"tool_use"* ]] || return 1
 }
 
 @test "joins multiple text blocks with a blank line" {
@@ -30,7 +30,8 @@ run_extract() { run env STREAM_PATH="$STREAM" bash "$SCRIPT"; }
   assistant '[{"type":"text","text":"first"},{"type":"text","text":"second"}]'
   run_extract
   [ "$status" -eq 0 ]
-  [[ "$output" == *"first"* ]] && [[ "$output" == *"second"* ]]
+  [[ "$output" == *"first"* ]] || return 1
+  [[ "$output" == *"second"* ]] || return 1
 }
 
 @test "prefers the fenced message over a later bare sign-off" {
@@ -43,9 +44,9 @@ Subject: docs: sync documentation with code changes
   assistant "$(text_block 'Done.')"
   run_extract
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Subject: docs: sync"* ]]
-  [[ "$output" != *"Done."* ]]
-  [[ "$output" != *"docs-sentinel-summary"* ]]
+  [[ "$output" == *"Subject: docs: sync"* ]] || return 1
+  [[ "$output" != *"Done."* ]] || return 1
+  [[ "$output" != *"docs-sentinel-summary"* ]] || return 1
 }
 
 @test "falls back to the last message when no fence appears" {
@@ -54,8 +55,8 @@ Subject: docs: sync documentation with code changes
   assistant "$(text_block 'No documentation updates needed — nothing drifted.')"
   run_extract
   [ "$status" -eq 0 ]
-  [[ "$output" == *"No documentation updates needed"* ]]
-  [[ "$output" != *"first message"* ]]
+  [[ "$output" == *"No documentation updates needed"* ]] || return 1
+  [[ "$output" != *"first message"* ]] || return 1
 }
 
 @test "survives a truncated trailing line" {
@@ -64,7 +65,7 @@ Subject: docs: sync documentation with code changes
   printf '{"type":"result","subty' >> "$STREAM"
   run_extract
   [ "$status" -eq 0 ]
-  [[ "$output" == *"No documentation updates needed"* ]]
+  [[ "$output" == *"No documentation updates needed"* ]] || return 1
 }
 
 @test "unbalanced fence -> exit 1" {
@@ -81,6 +82,14 @@ Subject: docs: sync')"
 <docs-sentinel-summary>b</docs-sentinel-summary>')"
   run_extract
   [ "$status" -eq 1 ]
+}
+
+@test "out-of-order fence tags -> exit 1, nothing on stdout" {
+  : > "$STREAM"
+  assistant "$(text_block '</docs-sentinel-summary>Subject: x<docs-sentinel-summary>')"
+  run --separate-stderr env STREAM_PATH="$STREAM" bash "$SCRIPT"
+  [ "$status" -eq 1 ] || return 1
+  [ -z "$output" ] || return 1
 }
 
 @test "no assistant messages -> empty output, exit 0" {
