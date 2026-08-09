@@ -100,3 +100,27 @@ run_guard() {
   FILE_BUDGET=abc run_guard
   [ "$status" -eq 1 ]
 }
+
+@test "untracked file created -> exit 1 and everything reverted" {
+  echo "sneaky" > docs/new-file.md
+  echo "readme v2" > README.md
+  run_guard
+  [ "$status" -eq 1 ]
+  [ ! -f docs/new-file.md ]
+  [ -z "$(git diff --name-only)" ]
+}
+
+@test "untracked file alone (no tracked edits) still fails" {
+  echo "sneaky" > docs/new-file.md
+  run_guard
+  [ "$status" -eq 1 ]
+  [ ! -f docs/new-file.md ]
+}
+
+@test "the transient context file is not treated as an untracked violation" {
+  echo "context" > .docs-sentinel-context.md
+  echo "readme v2" > README.md
+  run_guard
+  [ "$status" -eq 0 ]
+  grep -q 'changed=true' "$GITHUB_OUTPUT"
+}

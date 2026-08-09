@@ -22,7 +22,7 @@ any documentation the change made inaccurate, and fixes it — surgically.
 
 - 🔧 **On a PR** — doc fixes are committed straight to the PR branch, and one sticky status comment
   reports the result: drift found and fixed, or "no drift" (never silence, never comment spam).
-- 🔁 **On a push to your default branch** — it maintains a single rolling draft **docs-sync PR**
+- 🔁 **On a push to your default branch** — it maintains a single rolling **docs-sync PR**
   (dependabot-style: one fixed branch, always rebased, accumulates un-merged fixes).
 - 🚦 **A gate runs first** — you never pay for model calls on docs-only, test-only, or
   lockfile-only changes.
@@ -109,23 +109,24 @@ All inputs are optional.
 | `runner` | `ubuntu-latest` | Runner label for all jobs |
 | `claude-code-version` | `2.1.223` | Pinned `@anthropic-ai/claude-code` npm version |
 | `anthropic-base-url` | `https://openrouter.ai/api` | Model gateway base URL |
-| `model` | `~deepseek/deepseek-v4-flash-latest` | Main auditor model |
-| `small-model` | `~deepseek/deepseek-v4-flash-latest` | Background/summarization model |
-| `effort` | `high` | Reasoning effort for every tier (`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`auto`; empty = model default) |
-| `model-capabilities` | `effort,thinking,adaptive_thinking,interleaved_thinking` | Capabilities declared for the pinned models (empty = Claude Code's built-in detection) |
+| `model` | `z-ai/glm-5.2` | Main auditor model |
+| `small-model` | `deepseek/deepseek-v4-flash-0731` | Background/summarization model |
+| `effort` | `xhigh` | Reasoning effort for every tier (`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`auto`; empty = model default) |
+| `model-capabilities` | `effort,xhigh_effort,thinking,adaptive_thinking,interleaved_thinking` | Capabilities declared for the pinned models (empty = Claude Code's built-in detection) |
 | `use-bearer-auth` | `true` | `true`: OpenRouter-style bearer auth. `false`: Anthropic-native `ANTHROPIC_API_KEY` |
 
-The leading `~` is OpenRouter's marker for a *floating* alias: `~deepseek/deepseek-v4-flash-latest`
-follows DeepSeek's current Flash build, so the auditor stays current without a bump here. Pass a
-dated slug (e.g. `deepseek/deepseek-v4-flash-0731`) if you'd rather pin it.
+Both defaults are pinned to concrete versions rather than one of OpenRouter's `~…-latest` floating
+aliases, so a given workflow SHA always audits with the same models and an upstream rebuild cannot
+change the auditor's behaviour under you. Pass a `~…-latest` slug if you would rather track the
+newest build automatically.
 
 `model-capabilities` exists because Claude Code decides whether a model can reason by
 pattern-matching the model ID against known Anthropic families — a gateway slug matches nothing,
 so effort and thinking are switched off no matter what the model supports. Declaring the
-capabilities opts the pinned models back in and lets `effort` take hold. `xhigh_effort` and
-`max_effort` are deliberately left out: DeepSeek V4 Flash advertises no `xhigh`, and omitting them
-makes Claude Code clamp its own `xhigh` default down to `high`. Point this at a model without
-reasoning and you should clear the input.
+capabilities opts the pinned models back in and lets `effort` take hold. `xhigh_effort` is in the
+default list because the default `effort` is `xhigh` — leave it out and Claude Code clamps `xhigh`
+down to `high`, so the effort setting silently does nothing. `max_effort` stays out: neither pinned
+model advertises it. Point this at a model without reasoning and you should clear the input.
 
 ## Using Anthropic directly (instead of OpenRouter)
 
@@ -162,26 +163,41 @@ Any Anthropic-compatible gateway works the same way: point `anthropic-base-url` 
    ┌────────────────────────┐                  ┌────────────────────────┐
    │ audit-pr               │                  │ audit-main             │
    │ diff context → auditor │                  │ same audit …           │
-   │ → guardrail → commit   │                  │ → rolling draft        │
+   │ → guardrail → commit   │                  │ → rolling              │
    │ to PR branch + sticky  │                  │ docs-sync PR (one      │
    │ status comment         │                  │ branch, always rebased)│
    └────────────────────────┘                  └────────────────────────┘
 ```
 
 The auditor is the [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI run
-non-interactively with a locked-down tool set (`Read`, `Edit`, `Grep`, `Glob`, read-only
-`git diff`) — it cannot run builds, create files, or touch the network. The prompt is a generic
+non-interactively with a locked-down tool set (`Read`, `Edit`, `Grep`, `Glob`) and no shell
+access — it cannot run commands, create files, or touch the network. The prompt is a generic
 skeleton ([`engine/prompt-skeleton.md`](engine/prompt-skeleton.md)) concatenated with your policy
 file. After it runs, [`engine/guardrail.sh`](engine/guardrail.sh) mechanically enforces your
 allowlist and churn budgets — a misbehaving model gets its edits reverted, not merged.
 
 ## Degradation modes
 
+| Situation | What you get |
+|---|---|
+| Drift found and fixed | Doc fixes committed, sticky comment with the doc diff |
+| No drift | Sticky comment: "no documentation drift detected" |
+| Change touches no source files | Sticky comment: skipped |
+| Auditor ran but its summary was unusable | Sticky comment: **inconclusive**. Any doc edits still land — they passed the guardrail — but the change was not confirmed drift-free. Retried once before reporting. |
+| Auditor did not complete (crash, timeout, provider error) | Sticky comment: **inconclusive**. All edits are discarded, because a half-finished edit set can pass the guardrail while making no sense. |
+| Auditor edited files outside the allowlist or exceeded the churn budget | Sticky comment: **inconclusive**. Every edit is reverted; the job also fails so the PR can't merge unreviewed. |
+| Doc fixes were produced but could not be committed to the branch | Sticky comment: **inconclusive**. Nothing was pushed, so review the run log directly. |
+| Setup failed before the audit | Sticky comment: could not run |
+
+docs-sentinel never reports "no drift" unless the audit actually completed and produced a summary
+that agrees with what it changed.
+
 - **No `MODEL_API_KEY`:** the gate no-ops with a log line. Merge the caller first, add the key later.
 - **No `SYNC_PR_TOKEN`:** the docs-sync PR opens via `GITHUB_TOKEN` with a warning; its CI checks
   won't auto-trigger until you provide a PAT/App token.
 - **Missing policy file:** the audit job fails fast, naming the expected path.
-- **Guardrail violation:** all auditor edits are reverted and the job fails loudly.
+- **Guardrail violation:** all auditor edits are reverted and the job fails loudly — and still posts
+  a sticky inconclusive comment, so the PR shows the failure without you having to open the run log.
 - **Fork PRs and drafts:** skipped at the gate.
 
 ## FAQ

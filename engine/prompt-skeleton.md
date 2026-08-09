@@ -11,10 +11,9 @@ in doubt, **make no edit** and mention the doubt in your final summary.
 ## What the code change was
 
 The list of changed files and the full unified diff for this change are in
-**`.docs-sentinel-context.md`** at the repository root. **Read that file first.** You may also run
-`git diff` (read-only) to inspect any file's changes in more detail. To confirm what a command,
-port, env var, or schema *actually* is now, read the source directly with Read/Grep/Glob — never
-run build, install, or dev commands.
+**`.docs-sentinel-context.md`** at the repository root. **Read that file first.** To confirm what a
+command, port, env var, or schema *actually* is now, read the source directly with Read/Grep/Glob —
+never run build, install, or dev commands. You have no shell access.
 
 ## How to edit
 
@@ -64,9 +63,20 @@ If you find no convention, use the default subject above and wrap the body at
 
 ## Final output
 
-Your final message is captured and used to build the **commit message and the PR description** (its
-first `Subject:` line becomes the commit subject; the rest becomes the body), so write it for a
-human reviewer skimming the PR — concise, specific, no preamble. Use exactly this shape:
+Your final message is captured and used to build the **commit message and the PR description**, so
+write it for a human reviewer skimming the PR — concise, specific, no preamble.
+
+**Wrap your entire final answer in this fence, exactly once:**
+
+```
+<docs-sentinel-summary>
+...your summary here...
+</docs-sentinel-summary>
+```
+
+Nothing outside the fence is read. Do not emit the fence more than once, and do not nest it.
+
+Inside the fence, use exactly one of these two shapes:
 
 - **If you edited docs:** first a single line `Subject: <the one-line commit subject you chose in
   "Matching the repo's commit convention">`, then a blank line, then a markdown bullet list, one
@@ -74,19 +84,27 @@ human reviewer skimming the PR — concise, specific, no preamble. Use exactly t
   it:
 
   ```
+  <docs-sentinel-summary>
   Subject: docs: sync documentation with code changes
 
   - `README.md` — updated the dev port from 3400 to 3500 to match the server config change.
   - `docs/setup.md` — same port change in the quick-start.
+  </docs-sentinel-summary>
   ```
 
   Then, optionally, one short line of caveats (anything you were unsure about and left alone).
-- **If you made no edits:** a single line — `No documentation updates needed — <one-line reason>.`
-- **If a brand-new doc is needed** (you must not create it), add a final line starting
-  `NEEDS HUMAN: <what is missing>` so a person can follow up.
+- **If you made no edits:** a single line beginning exactly
+  `No documentation updates needed — <one-line reason>.`
 
-Keep it tight. Do not restate the diff, your process, or these instructions — just what changed in
-the docs and why.
+These two shapes are checked mechanically against what you actually changed. A `Subject:` summary
+when you edited nothing, or a "No documentation updates needed" summary when you did edit files,
+is rejected and the audit is reported as inconclusive.
+
+- **If a brand-new doc is needed** (you must not create it), add a final line inside the fence
+  starting `NEEDS HUMAN: <what is missing>` so a person can follow up.
+
+Keep it tight — under 60 lines. Do not restate the diff, your process, or these instructions. Do not
+narrate your reasoning: only the conclusion belongs in the fence.
 
 ---
 

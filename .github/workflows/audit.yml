@@ -11,11 +11,13 @@ name: Docs Sentinel
 # job.workflow_sha — the exact commit of this workflow file the caller pinned — so consumer
 # workspaces stay pristine and engine and workflow can never skew.
 #
-# Default model routing is DeepSeek V4 Flash via OpenRouter (Anthropic-compatible endpoint, bearer
-# auth). Both tiers use the '~...-latest' floating alias, so they track DeepSeek's current Flash
-# build rather than a pinned dated one — pass an explicit slug to pin. Reasoning runs at `high`
-# effort on every tier; see the effort and model-capabilities inputs. For Anthropic-native auth:
-# use-bearer-auth: false, anthropic-base-url: '', model: '', small-model: ''.
+# Default model routing goes through OpenRouter (Anthropic-compatible endpoint, bearer auth):
+# GLM 5.2 for the main tier, DeepSeek V4 Flash for the Haiku/background tier. Both are pinned to
+# concrete versions rather than a '~...-latest' floating alias, so a run is reproducible and an
+# upstream rebuild cannot change the auditor under you. Reasoning runs at `xhigh` effort on every
+# tier — which requires `xhigh_effort` in model-capabilities, or Claude Code clamps it to `high`.
+# For Anthropic-native auth: use-bearer-auth: false, anthropic-base-url: '', model: '',
+# small-model: ''.
 
 on:
   workflow_call:
@@ -71,19 +73,19 @@ on:
       model:
         description: Main session model slug (empty = Claude Code defaults)
         type: string
-        default: '~deepseek/deepseek-v4-flash-latest'
+        default: 'z-ai/glm-5.2'
       small-model:
         description: Haiku-tier / background model slug (empty = Claude Code defaults)
         type: string
-        default: '~deepseek/deepseek-v4-flash-latest'
+        default: 'deepseek/deepseek-v4-flash-0731'
       effort:
         description: 'Reasoning effort for every tier: low|medium|high|xhigh|max|auto (empty = leave to the model/gateway default)'
         type: string
-        default: 'high'
+        default: 'xhigh'
       model-capabilities:
         description: Comma-separated CLAUDE capabilities declared for the pinned models. Claude Code gates reasoning by pattern-matching the model ID, so a gateway slug needs this or effort/thinking stay off. Empty = fall back to Claude Code's built-in detection.
         type: string
-        default: 'effort,thinking,adaptive_thinking,interleaved_thinking'
+        default: 'effort,xhigh_effort,thinking,adaptive_thinking,interleaved_thinking'
       use-bearer-auth:
         description: 'true: MODEL_API_KEY -> ANTHROPIC_AUTH_TOKEN (OpenRouter-style). false: -> ANTHROPIC_API_KEY (Anthropic-native)'
         type: boolean
@@ -191,7 +193,10 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && github.event_name == 'pull_request'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 15
+    # Comfortably above the 20-minute auditor STEP timeout below: a hung attempt must fail the
+    # STEP (letting guardrail/compose/commit/render still run) rather than cancel the JOB, which
+    # would skip even `if: ${{ !cancelled() }}` steps and post no comment at all.
+    timeout-minutes: 35
     permissions:
       contents: write
       pull-requests: write
@@ -244,8 +249,6 @@ jobs:
           SMALL: ${{ inputs.small-model }}
           EFFORT: ${{ inputs.effort }}
           CAPS: ${{ inputs.model-capabilities }}
-          USE_BEARER: ${{ inputs.use-bearer-auth }}
-          MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
         run: |
           set -euo pipefail
           # Claude Code resolves models per TIER; pointing it at a non-Anthropic gateway means
@@ -270,9 +273,9 @@ jobs:
           # Reasoning. Claude Code decides whether a model can think by pattern-matching the
           # model ID against known Anthropic families, so a gateway slug lands in the "no
           # reasoning" bucket and effort is silently ignored. Declaring capabilities per pinned
-          # tier opts the model back in. xhigh_effort/max_effort are deliberately absent from
-          # the default set: deepseek-v4-flash advertises no xhigh, and leaving them out makes
-          # Claude Code clamp its own xhigh default down to high.
+          # tier opts the model back in. xhigh_effort IS in the default set because the default
+          # effort is xhigh — omit it and Claude Code silently clamps xhigh down to high, making
+          # the effort input a no-op. max_effort stays out: neither pinned model advertises it.
           if [ -n "$CAPS" ]; then
             if [ -n "$MODEL" ]; then
               {
@@ -292,12 +295,6 @@ jobs:
             esac
             echo "CLAUDE_CODE_EFFORT_LEVEL=$EFFORT" >> "$GITHUB_ENV"
           fi
-          if [ "$USE_BEARER" = "true" ]; then
-            echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"
-            echo "ANTHROPIC_API_KEY=" >> "$GITHUB_ENV"
-          else
-            echo "ANTHROPIC_API_KEY=$MODEL_KEY" >> "$GITHUB_ENV"
-          fi
 
       - name: Build diff context
         env:
@@ -306,17 +303,25 @@ jobs:
         run: bash "$ENGINE_DIR/build-context.sh"
 
       - name: Run docs auditor (Claude Code CLI)
+        id: audit
+        # Step-level timeout, tighter than the job's. A JOB timeout is a cancellation: remaining
+        # steps, including `always()` ones, are not reliably run — so a hung attempt would bypass
+        # every rendering guarantee in Task 9 and go silent. A STEP timeout fails the step, leaving
+        # the render step to post the infra outcome.
+        timeout-minutes: 20
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
           COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
+          RANGE: ${{ needs.gate.outputs.range }}
+          DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
+          ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
         run: |
           set -euo pipefail
           # Install via npm (not bun) so the postinstall that fetches the native binary runs.
-          # Pinned version, isolated prefix -> deterministic, no global perms.
           npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
           export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
           claude --version
-          # Fallback commit-body line width injected into the prompt; validate before substituting.
           LINE_MAX="${COMMIT_BODY_LINE_LENGTH:-100}"
           if ! printf '%s' "$LINE_MAX" | grep -qE '^[1-9][0-9]*$'; then
             echo "::error::commit-body-line-length must be a positive integer (got '$LINE_MAX')."; exit 1
@@ -324,21 +329,7 @@ jobs:
           cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
           sed "s/{{COMMIT_BODY_LINE_LENGTH}}/$LINE_MAX/g" "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/prompt.md.tmp"
           mv "$RUNNER_TEMP/prompt.md.tmp" "$RUNNER_TEMP/prompt.md"
-          # --output-format json so we can lift the auditor's final summary into the commit
-          # message + PR body in a later step, instead of boilerplate.
-          set +e
-          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
-            --allowed-tools "Read,Edit,Grep,Glob,Bash(git diff:*)" \
-            --permission-mode acceptEdits \
-            --output-format json > "$RUNNER_TEMP/auditor.json"
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::error::Claude Code exited with status $status"; cat "$RUNNER_TEMP/auditor.json" || true
-            exit "$status"
-          fi
-          jq -r '.result // ""' "$RUNNER_TEMP/auditor.json" > "$RUNNER_TEMP/auditor-summary.md"
-          echo "----- Auditor summary -----"; cat "$RUNNER_TEMP/auditor-summary.md"; echo "---------------------------"
+          PROMPT_PATH="$RUNNER_TEMP/prompt.md" bash "$ENGINE_DIR/run-auditor.sh"
 
       - name: Guardrail — keep edits in the doc allowlist and bounded
         id: guard
@@ -354,11 +345,12 @@ jobs:
         if: steps.guard.outputs.changed == 'true'
         env:
           FILES_PATH: ${{ steps.guard.outputs.files_path }}
-          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: bash "$ENGINE_DIR/compose-message.sh"
 
       - name: Commit & push doc fixes to the PR branch
+        id: commit
         if: steps.guard.outputs.changed == 'true'
         env:
           HEAD_REF: ${{ github.head_ref }}
@@ -371,36 +363,77 @@ jobs:
           git commit -F "$COMMIT_PATH"
           git push origin "HEAD:${HEAD_REF}"
 
-      # Always leave a single, sticky status comment — drift or not — so every PR shows the
-      # docs-sentinel result instead of going silent when there's nothing to fix.
-      - name: Post docs-sentinel status comment (sticky)
-        uses: actions/github-script@v9
+      - name: Render docs-sentinel status
+        id: status
+        # `!cancelled()`, NOT `always()`. This job has cancel-in-progress: true, and `always()` runs
+        # on cancellation — so a superseded run would render "could not run" and overwrite the
+        # newer run's correct comment.
+        if: ${{ !cancelled() }}
         env:
+          DEGRADED: ${{ steps.audit.outputs.degraded }}
+          DEGRADED_REASON: ${{ steps.audit.outputs.degraded_reason }}
           CHANGED: ${{ steps.guard.outputs.changed }}
           BODY_PATH: ${{ steps.compose.outputs.body_path }}
-          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
+          AUDIT_RESULT: ${{ steps.audit.outcome }}
+          GUARD_RESULT: ${{ steps.guard.outcome }}
+          COMMIT_RESULT: ${{ steps.commit.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The decision ladder (including the load-bearing GUARD_RESULT rung — guardrail.sh
+          # exits 1 on a violation WITHOUT ever writing `changed=`, so CHANGED is empty on that
+          # path) lives in decide-outcome.sh and is covered by tests/decide-outcome.bats, whose
+          # regression test proves what breaks if that rung is dropped: a clean-pass comment for
+          # the exact attack the guardrail exists to catch.
+          #
+          # decide-outcome.sh prints OUTCOME=/KIND=/EDITS_LANDED= on the first three lines, then
+          # the raw (possibly multi-line) REASON for every line after — read with `< <(...)`, not
+          # a pipe, so the assignments land in this shell rather than a subshell.
+          {
+            IFS= read -r OUTCOME_LINE
+            IFS= read -r KIND_LINE
+            IFS= read -r EDITS_LANDED_LINE
+            REASON=$(cat)
+          } < <(AUDIT_RESULT="$AUDIT_RESULT" GUARD_RESULT="$GUARD_RESULT" DEGRADED="$DEGRADED" \
+                  DEGRADED_REASON="$DEGRADED_REASON" CHANGED="$CHANGED" \
+                  COMMIT_RESULT="$COMMIT_RESULT" SUMMARY_PATH="$SUMMARY_PATH" \
+                  bash "$ENGINE_DIR/decide-outcome.sh")
+          OUTCOME="${OUTCOME_LINE#OUTCOME=}"
+          KIND="${KIND_LINE#KIND=}"
+          EDITS_LANDED="${EDITS_LANDED_LINE#EDITS_LANDED=}"
+          BODY=""
+          if [ "$OUTCOME" = "fixed" ]; then BODY="$(cat "$BODY_PATH")"; fi
+          OUTCOME="$OUTCOME" KIND="$KIND" EDITS_LANDED="$EDITS_LANDED" REASON="$REASON" \
+            BODY="$BODY" RUN_URL="$RUN_URL" \
+            bash "$ENGINE_DIR/render-status.sh" > "$RUNNER_TEMP/status-body.md"
+          echo "body_path=$RUNNER_TEMP/status-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Post docs-sentinel status comment (sticky)
+        if: ${{ !cancelled() }}
+        uses: actions/github-script@v9
+        env:
+          BODY_PATH: ${{ steps.status.outputs.body_path }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
             const fs = require('fs');
             const marker = '<!-- docs-sentinel-status -->';
-            let body;
-            if (process.env.CHANGED === 'true') {
-              body = fs.readFileSync(process.env.BODY_PATH, 'utf8');
-            } else {
-              let reason = '';
-              try { reason = fs.readFileSync(process.env.SUMMARY_PATH, 'utf8').trim(); } catch {}
-              if (!reason) {
-                reason = 'No documentation updates needed — the code change did not contradict any in-scope doc.';
-              }
-              body = [
-                '🤖 **Docs audit** — no documentation drift detected.',
+            // Fallback matters: if the engine fetch failed, ENGINE_DIR never existed, so the render
+            // step could not run and BODY_PATH is empty. Posting nothing here would be the silence
+            // the README's contract forbids.
+            let rendered = '';
+            try { rendered = fs.readFileSync(process.env.BODY_PATH, 'utf8'); } catch {}
+            if (!rendered.trim()) {
+              rendered = [
+                '⚠️ **Docs audit — could not run.** Setup failed before the audit started, so this change has **not** been checked for documentation drift.',
                 '',
-                reason,
+                `[View the run](${process.env.RUN_URL})`,
                 '',
                 '<sub>Generated by [docs-sentinel](https://github.com/slingshot/docs-sentinel).</sub>',
               ].join('\n');
             }
-            const full = `${marker}\n${body}`;
+            const full = `${marker}\n${rendered}`;
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -457,7 +490,10 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && github.event_name == 'push'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 15
+    # Comfortably above the 20-minute auditor STEP timeout below: a hung attempt must fail the
+    # STEP (letting guardrail/compose/render still run) rather than cancel the JOB, which would
+    # skip even `if: ${{ !cancelled() }}` steps and post no comment at all.
+    timeout-minutes: 35
     permissions:
       contents: write
       pull-requests: write
@@ -468,6 +504,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch docs-sentinel engine
         env:
@@ -509,8 +546,6 @@ jobs:
           SMALL: ${{ inputs.small-model }}
           EFFORT: ${{ inputs.effort }}
           CAPS: ${{ inputs.model-capabilities }}
-          USE_BEARER: ${{ inputs.use-bearer-auth }}
-          MODEL_KEY: ${{ secrets.MODEL_API_KEY }}
         run: |
           set -euo pipefail
           if [ -n "$BASE_URL" ]; then echo "ANTHROPIC_BASE_URL=$BASE_URL" >> "$GITHUB_ENV"; fi
@@ -532,9 +567,9 @@ jobs:
           # Reasoning. Claude Code decides whether a model can think by pattern-matching the
           # model ID against known Anthropic families, so a gateway slug lands in the "no
           # reasoning" bucket and effort is silently ignored. Declaring capabilities per pinned
-          # tier opts the model back in. xhigh_effort/max_effort are deliberately absent from
-          # the default set: deepseek-v4-flash advertises no xhigh, and leaving them out makes
-          # Claude Code clamp its own xhigh default down to high.
+          # tier opts the model back in. xhigh_effort IS in the default set because the default
+          # effort is xhigh — omit it and Claude Code silently clamps xhigh down to high, making
+          # the effort input a no-op. max_effort stays out: neither pinned model advertises it.
           if [ -n "$CAPS" ]; then
             if [ -n "$MODEL" ]; then
               {
@@ -554,12 +589,6 @@ jobs:
             esac
             echo "CLAUDE_CODE_EFFORT_LEVEL=$EFFORT" >> "$GITHUB_ENV"
           fi
-          if [ "$USE_BEARER" = "true" ]; then
-            echo "ANTHROPIC_AUTH_TOKEN=$MODEL_KEY" >> "$GITHUB_ENV"
-            echo "ANTHROPIC_API_KEY=" >> "$GITHUB_ENV"
-          else
-            echo "ANTHROPIC_API_KEY=$MODEL_KEY" >> "$GITHUB_ENV"
-          fi
 
       - name: Build diff context
         env:
@@ -568,15 +597,25 @@ jobs:
         run: bash "$ENGINE_DIR/build-context.sh"
 
       - name: Run docs auditor (Claude Code CLI)
+        id: audit
+        # Step-level timeout, tighter than the job's. A JOB timeout is a cancellation: remaining
+        # steps, including `always()` ones, are not reliably run — so a hung attempt would bypass
+        # every rendering guarantee in Task 9 and go silent. A STEP timeout fails the step, leaving
+        # the render step to post the infra outcome.
+        timeout-minutes: 20
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
           COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
+          RANGE: ${{ needs.gate.outputs.range }}
+          DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
+          ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
+          ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
         run: |
           set -euo pipefail
+          # Install via npm (not bun) so the postinstall that fetches the native binary runs.
           npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
           export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
           claude --version
-          # Fallback commit-body line width injected into the prompt; validate before substituting.
           LINE_MAX="${COMMIT_BODY_LINE_LENGTH:-100}"
           if ! printf '%s' "$LINE_MAX" | grep -qE '^[1-9][0-9]*$'; then
             echo "::error::commit-body-line-length must be a positive integer (got '$LINE_MAX')."; exit 1
@@ -584,19 +623,7 @@ jobs:
           cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
           sed "s/{{COMMIT_BODY_LINE_LENGTH}}/$LINE_MAX/g" "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/prompt.md.tmp"
           mv "$RUNNER_TEMP/prompt.md.tmp" "$RUNNER_TEMP/prompt.md"
-          set +e
-          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
-            --allowed-tools "Read,Edit,Grep,Glob,Bash(git diff:*)" \
-            --permission-mode acceptEdits \
-            --output-format json > "$RUNNER_TEMP/auditor.json"
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::error::Claude Code exited with status $status"; cat "$RUNNER_TEMP/auditor.json" || true
-            exit "$status"
-          fi
-          jq -r '.result // ""' "$RUNNER_TEMP/auditor.json" > "$RUNNER_TEMP/auditor-summary.md"
-          echo "----- Auditor summary -----"; cat "$RUNNER_TEMP/auditor-summary.md"; echo "---------------------------"
+          PROMPT_PATH="$RUNNER_TEMP/prompt.md" bash "$ENGINE_DIR/run-auditor.sh"
 
       - name: Guardrail — keep edits in the doc allowlist and bounded
         id: guard
@@ -612,7 +639,7 @@ jobs:
         if: steps.guard.outputs.changed == 'true'
         env:
           FILES_PATH: ${{ steps.guard.outputs.files_path }}
-          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
           SHA: ${{ github.sha }}
         run: bash "$ENGINE_DIR/compose-message.sh"
 
