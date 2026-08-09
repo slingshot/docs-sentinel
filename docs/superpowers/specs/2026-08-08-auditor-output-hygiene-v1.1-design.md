@@ -86,8 +86,12 @@ configuration there; the secret is injected in-process on the auditor step only:
 ```yaml
 env:
   ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
-  ANTHROPIC_API_KEY:    ${{ inputs.use-bearer-auth && '' || secrets.MODEL_API_KEY }}
+  ANTHROPIC_API_KEY:    ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
 ```
+
+Note the negation on the second line. GitHub's `&&`/`||` return *operands*, and `''` is falsy, so
+the intuitive `inputs.use-bearer-auth && '' || secrets.MODEL_API_KEY` resolves to the secret on the
+bearer path — handing the key to both variables, the opposite of v1's deliberate blanking.
 
 Additionally set `persist-credentials: false` on the `audit-main` checkout —
 `create-pull-request` supplies its own token — so git push credentials are not on disk during the
@@ -169,7 +173,9 @@ unbalanced fences rather than guessing.
 Inputs: the extracted summary and `EDITED_COUNT` (from `git diff HEAD --name-only | wc -l`, computed
 by `run-auditor.sh` — it does **not** depend on the guardrail having run).
 
-Normalize first: NFKC, strip CR. Then reject when any hold:
+Normalize line endings (strip CR) first. Full NFKC folding is not available in portable shell, so
+the banned-token list instead enumerates both the fullwidth (U+FF5C) and ASCII-normalized (`<|`)
+spellings of the DSML delimiter explicitly. Then reject when any hold:
 
 - empty or whitespace-only;
 - contains, case-insensitively, any of: U+FF5C, `<|`, `DSML`, `<invoke`, `<function_calls`,

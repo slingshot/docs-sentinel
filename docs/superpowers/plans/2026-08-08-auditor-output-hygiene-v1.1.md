@@ -74,10 +74,9 @@ run build, install, or dev commands.
 with:
 
 ```markdown
-**`.docs-sentinel-context.md`** at the repository root. **Read that file first.** It contains the
-full unified diff for this change. To confirm what a command, port, env var, or schema *actually*
-is now, read the source directly with Read/Grep/Glob — never run build, install, or dev commands.
-You have no shell access.
+**`.docs-sentinel-context.md`** at the repository root. **Read that file first.** To confirm what a
+command, port, env var, or schema *actually* is now, read the source directly with Read/Grep/Glob —
+never run build, install, or dev commands. You have no shell access.
 ```
 
 - [ ] **Step 4: Stop writing the credential to `$GITHUB_ENV`**
@@ -101,8 +100,17 @@ Add to the `env:` block of both "Run docs auditor" steps:
 
 ```yaml
           ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
-          ANTHROPIC_API_KEY: ${{ inputs.use-bearer-auth && '' || secrets.MODEL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
 ```
+
+**Do not write the second line as `${{ inputs.use-bearer-auth && '' || secrets.MODEL_API_KEY }}`.**
+GitHub's `&&`/`||` return operands rather than booleans, and `''` is **falsy** — so with
+`use-bearer-auth: true` that form evaluates `true && ''` → `''` → `'' || secret` → **the secret**,
+handing the key to *both* variables. That is the opposite of the current code's deliberate
+`ANTHROPIC_API_KEY=` blanking. The `!inputs.…` form above is safe because its middle operand is
+either a non-empty secret or short-circuits.
+
+Also delete `USE_BEARER` from that step's `env:` block — Step 4 removed its only consumer.
 
 - [ ] **Step 6: Drop push credentials from the default-branch checkout**
 
@@ -121,10 +129,11 @@ In `audit-main`'s checkout step (`audit.yml:468`), add `persist-credentials: fal
 
 ```bash
 grep -n 'GITHUB_ENV' .github/workflows/audit.yml | grep -iE 'TOKEN|API_KEY|MODEL_KEY' && echo "FAIL: credential still written to GITHUB_ENV" || echo "PASS"
-grep -c 'Bash(git diff' .github/workflows/audit.yml
+! grep -q 'Bash(git diff' .github/workflows/audit.yml && echo "PASS: no bash grant" || echo "FAIL: bash grant remains"
 ```
 
-Expected: `PASS`, then `0`.
+Expected: `PASS`, then `PASS: no bash grant`. (Use `! grep -q`, not `grep -c` — `grep -c` prints
+`0` but *exits 1*, which reads as a failure to a strict executor.)
 
 - [ ] **Step 8: Lint and commit**
 
@@ -544,9 +553,14 @@ SCRIPT="$BATS_TEST_DIRNAME/../engine/validate-summary.sh"
 setup() {
   cd "$BATS_TEST_TMPDIR"
   SUMMARY="$BATS_TEST_TMPDIR/summary.md"
+  # Scope the script's scratch file to this test's tmpdir; the default /tmp path would collide
+  # when bats runs with --jobs.
+  export RUNNER_TEMP="$BATS_TEST_TMPDIR"
 }
 
-run_validate() { run env SUMMARY_PATH="$SUMMARY" EDITED_COUNT="${1:-0}" bash "$SCRIPT"; }
+run_validate() {
+  run env SUMMARY_PATH="$SUMMARY" EDITED_COUNT="${1:-0}" RUNNER_TEMP="$RUNNER_TEMP" bash "$SCRIPT"
+}
 
 @test "PR #8/#11 regression: DSML closing tags rejected" {
   printf '</\xef\xbd\x9cDSML\xef\xbd\x9cparameter>\n</\xef\xbd\x9cDSML\xef\xbd\x9cinvoke>\n' > "$SUMMARY"
@@ -793,12 +807,31 @@ if [ "${#UNTRACKED[@]}" -gt 0 ]; then
 fi
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Correct the now-false comment above the tracked-file scan**
+
+`guardrail.sh:31-33` currently claims untracked files cannot exist. That was never true (see Task 1)
+and is now actively contradicted by the check above it. Replace:
+
+```bash
+# Tracked modifications the auditor made, HEAD-relative so STAGED edits are caught too. It cannot
+# create files (Write is disallowed), so there are no untracked files to consider. (while-read, not
+# mapfile: bash 3.2 portability.)
+```
+
+with:
+
+```bash
+# Tracked modifications the auditor made, HEAD-relative so STAGED edits are caught too. Untracked
+# files are rejected outright above, so everything reaching here is a modification to a tracked
+# file. (while-read, not mapfile: bash 3.2 portability.)
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
 
 Run: `bats tests/guardrail.bats && shellcheck engine/guardrail.sh`
 Expected: all guardrail tests pass, shellcheck silent.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add engine/guardrail.sh tests/guardrail.bats
@@ -815,7 +848,7 @@ git commit -m "fix: fail the guardrail when the auditor creates untracked files"
 
 **Interfaces:**
 - Consumes: `classify-run.sh`, `extract-summary.sh`, `validate-summary.sh`, `build-context.sh` — all via `$ENGINE_DIR`.
-- Produces: step outputs `degraded` (`""`|`hygiene`|`execution`), `degraded_reason` (single line, ≤300 chars), `summary_path`. Task 7 and Task 8 consume `degraded` and `degraded_reason`.
+- Produces: step outputs `degraded` (`""`|`hygiene`|`execution`), `degraded_reason` (single line, ≤300 chars), `summary_path`. Task 8 wires the step; **Task 9** consumes `degraded` and `degraded_reason`.
 
 Env contract: `ENGINE_DIR`, `PROMPT_PATH`, `RANGE`, `GITHUB_OUTPUT` required; `CLAUDE_BIN` (default `claude`), `ALLOWED_TOOLS` (default `Read,Edit,Grep,Glob`), `MAX_ATTEMPTS` (default 2), `DIFF_EXCLUDE`, `RUNNER_TEMP`, `GITHUB_STEP_SUMMARY` optional.
 
@@ -1176,6 +1209,11 @@ grep -o "FENCE_OPEN='[^']*'" engine/extract-summary.sh
 Expected: a non-zero count, and `FENCE_OPEN='<docs-sentinel-summary>'`. The literals must match
 byte for byte.
 
+**Release ordering.** Between this task and Task 9, the prompt asks for a fence while the workflow
+still pipes `jq -r '.result'` — so fence tags would appear verbatim in public comments. Consumers are
+insulated because the engine is fetched at `job.workflow_sha`, but **do not advance the `v1` tag
+until Task 9 is merged.**
+
 - [ ] **Step 3: Commit**
 
 ```bash
@@ -1203,13 +1241,18 @@ Replace the whole `- name: Run docs auditor (Claude Code CLI)` step with:
 ```yaml
       - name: Run docs auditor (Claude Code CLI)
         id: audit
+        # Step-level timeout, tighter than the job's. A JOB timeout is a cancellation: remaining
+        # steps, including `always()` ones, are not reliably run — so a hung attempt would bypass
+        # every rendering guarantee in Task 9 and go silent. A STEP timeout fails the step, leaving
+        # the render step to post the infra outcome.
+        timeout-minutes: 20
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
           COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
           RANGE: ${{ needs.gate.outputs.range }}
           DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
           ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
-          ANTHROPIC_API_KEY: ${{ inputs.use-bearer-auth && '' || secrets.MODEL_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
         run: |
           set -euo pipefail
           # Install via npm (not bun) so the postinstall that fetches the native binary runs.
@@ -1240,12 +1283,23 @@ In both jobs, change the compose step's `SUMMARY_PATH` from the hardcoded
           SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
 ```
 
-- [ ] **Step 4: Raise the timeouts for two attempts**
+- [ ] **Step 4: Raise the job timeouts and give the commit step an id**
 
-`timeout-minutes: 15` was sized for one attempt. In both `audit-pr` and `audit-main`:
+`timeout-minutes: 15` was sized for one attempt. In both `audit-pr` and `audit-main`, raise the
+**job** timeout (this is the outer bound; the step timeout from Step 1 is what actually protects the
+degraded path):
 
 ```yaml
     timeout-minutes: 25
+```
+
+In `audit-pr`, add `id: commit` to the push step so Task 9 can tell a landed commit from a rejected
+one:
+
+```yaml
+      - name: Commit & push doc fixes to the PR branch
+        id: commit
+        if: steps.guard.outputs.changed == 'true'
 ```
 
 - [ ] **Step 5: Lint**
@@ -1270,13 +1324,21 @@ is empty and there are no edits — which is exactly the degraded state. Routing
 through `compose-message.sh` cannot reach it, because that step only runs at `changed == 'true'`.
 
 **Files:**
-- Modify: `.github/workflows/audit.yml:376-414` (replace the sticky-comment step)
-- Modify: `.github/workflows/audit.yml:416-452` (fold `comment-pr-skip` into the shared renderer)
+- Modify: `.github/workflows/audit.yml:376-414` (replace the sticky-comment step in `audit-pr`)
+- Create: `engine/render-status.sh`
 - Create: `tests/status-comment.bats`
+
+**Do NOT touch the `comment-pr-skip` job.** It is tempting to point it at the shared renderer, but
+that job runs `actions/checkout` — and in a *reusable* workflow that checks out the **caller's**
+repository, which has no `engine/`. (This is exactly why `audit.yml:207-227` fetches the engine by
+`job.workflow_sha` instead.) The job also grants only `pull-requests: write`, so it has no
+`contents: read` for a checkout. Leave its inline wording as-is; the duplicated sentence is a
+deliberate trade for keeping the cheap, constantly-running skip path dependency-free.
 
 **Interfaces:**
 - Consumes: `steps.audit.outputs.degraded`, `steps.audit.outputs.degraded_reason`,
-  `steps.guard.outputs.changed`, `steps.compose.outputs.body_path`.
+  `steps.audit.outcome`, `steps.guard.outcome`, `steps.guard.outputs.changed`,
+  `steps.commit.outcome` (added in Task 8), `steps.compose.outputs.body_path`.
 - Produces: the sticky PR comment.
 
 - [ ] **Step 1: Extract the rendering decision into a testable script**
@@ -1289,19 +1351,25 @@ Create `engine/render-status.sh`:
 # one rule that matters can be tested: an inconclusive audit must never render as a clean pass.
 #
 # Env contract:
-#   OUTCOME  (required)  fixed | clean | skipped | inconclusive | infra
-#   REASON   (optional)  one-line explanation, used by inconclusive/infra
-#   BODY     (optional)  pre-composed markdown body, used by `fixed`
-#   RUN_URL  (optional)  link to the workflow run
+#   OUTCOME      (required)  fixed | clean | skipped | inconclusive | infra
+#   KIND         (optional)  for inconclusive: hygiene | execution | guardrail | push
+#   EDITS_LANDED (optional)  "true" when doc fixes were committed despite an inconclusive result
+#   REASON       (optional)  one-line explanation
+#   BODY         (optional)  pre-composed markdown body, used by `fixed`
+#   RUN_URL      (optional)  link to the workflow run
 set -euo pipefail
 
 : "${OUTCOME:?OUTCOME not set}"
+KIND="${KIND:-}"
+EDITS_LANDED="${EDITS_LANDED:-false}"
 REASON="${REASON:-}"
 BODY="${BODY:-}"
 RUN_URL="${RUN_URL:-}"
 
 FOOTER='<sub>Generated by [docs-sentinel](https://github.com/slingshot/docs-sentinel).</sub>'
 
+# `[ -n "$X" ] && printf ...` is the last command in several branches; under `set -e` a false test
+# would abort. Each is written as a full `if` for that reason.
 case "$OUTCOME" in
   fixed)
     printf '%s\n' "$BODY"
@@ -1309,7 +1377,7 @@ case "$OUTCOME" in
   clean)
     echo '🤖 **Docs audit** — no documentation drift detected.'
     echo
-    [ -n "$REASON" ] && printf '%s\n\n' "$REASON"
+    if [ -n "$REASON" ]; then printf '%s\n\n' "$REASON"; fi
     printf '%s\n' "$FOOTER"
     ;;
   skipped)
@@ -1318,16 +1386,39 @@ case "$OUTCOME" in
     printf '%s\n' "$FOOTER"
     ;;
   inconclusive)
-    echo '⚠️ **Docs audit — inconclusive.** The auditor ran but did not produce a usable result, so this change has **not** been checked for documentation drift.'
+    echo '⚠️ **Docs audit — inconclusive.** This change has **not** been confirmed free of documentation drift.'
     echo
-    [ -n "$REASON" ] && printf 'Reason: `%s`\n\n' "$REASON"
-    [ -n "$RUN_URL" ] && printf '[View the run](%s)\n\n' "$RUN_URL"
+    case "$KIND" in
+      hygiene)
+        echo 'The auditor completed, but its summary was unusable, so its result could not be verified.'
+        ;;
+      execution)
+        echo 'The audit did not complete — the run crashed, timed out, or the model provider errored. Any edits it had made were discarded.'
+        ;;
+      guardrail)
+        echo 'The auditor edited files outside the documentation allowlist or exceeded the churn budget, so **every** edit was reverted.'
+        ;;
+      push)
+        echo 'Documentation fixes were produced, but they could not be pushed to this branch.'
+        ;;
+      *)
+        echo 'The auditor did not produce a usable result.'
+        ;;
+    esac
+    echo
+    if [ "$EDITS_LANDED" = "true" ]; then
+      echo '**Documentation fixes were still committed to this PR** — they passed the guardrail — but they are undescribed. Review them directly in the diff.'
+      echo
+    fi
+    # shellcheck disable=SC2016  # backticks are literal markdown code fencing, not substitution
+    if [ -n "$REASON" ]; then printf 'Reason: `%s`\n\n' "$REASON"; fi
+    if [ -n "$RUN_URL" ]; then printf '[View the run](%s)\n\n' "$RUN_URL"; fi
     printf '%s\n' "$FOOTER"
     ;;
   infra)
     echo '⚠️ **Docs audit — could not run.** Setup failed before the audit started, so this change has **not** been checked for documentation drift.'
     echo
-    [ -n "$RUN_URL" ] && printf '[View the run](%s)\n\n' "$RUN_URL"
+    if [ -n "$RUN_URL" ]; then printf '[View the run](%s)\n\n' "$RUN_URL"; fi
     printf '%s\n' "$FOOTER"
     ;;
   *)
@@ -1346,14 +1437,45 @@ Create `tests/status-comment.bats`:
 
 SCRIPT="$BATS_TEST_DIRNAME/../engine/render-status.sh"
 
-render() { run env OUTCOME="$1" REASON="${2:-}" BODY="${3:-}" RUN_URL="https://example/run" bash "$SCRIPT"; }
+render() {
+  run env OUTCOME="$1" REASON="${2:-}" BODY="${3:-}" KIND="${4:-}" EDITS_LANDED="${5:-false}" \
+      RUN_URL="https://example/run" bash "$SCRIPT"
+}
 
 @test "inconclusive NEVER renders the no-drift heading" {
-  render inconclusive "summary contains tool-call framing tokens"
+  render inconclusive "summary contains tool-call framing tokens" "" hygiene
   [ "$status" -eq 0 ]
   [[ "$output" != *"no documentation drift detected"* ]]
   [[ "$output" == *"inconclusive"* ]]
-  [[ "$output" == *"has **not** been checked"* ]]
+  [[ "$output" == *"not** been confirmed"* ]]
+}
+
+@test "guardrail rejection reads as a rejection, not a clean pass" {
+  render inconclusive "guardrail rejected the auditor's edits" "" guardrail
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"no documentation drift detected"* ]]
+  [[ "$output" == *"every** edit was reverted"* ]]
+}
+
+@test "execution failure says the audit did not complete" {
+  render inconclusive "claude exited with status 3" "" execution
+  [[ "$output" == *"did not complete"* ]]
+  [[ "$output" != *"summary was unusable"* ]]
+}
+
+@test "hygiene failure with landed edits says the edits landed" {
+  render inconclusive "summary unusable" "" hygiene true
+  [[ "$output" == *"still committed to this PR"* ]]
+}
+
+@test "hygiene failure without landed edits does not claim edits landed" {
+  render inconclusive "summary unusable" "" hygiene false
+  [[ "$output" != *"still committed to this PR"* ]]
+}
+
+@test "failed push reads as unpushed, not as fixed" {
+  render inconclusive "could not push" "" push
+  [[ "$output" == *"could not be pushed"* ]]
 }
 
 @test "infra failure NEVER renders the no-drift heading" {
@@ -1401,7 +1523,9 @@ executing strictly TDD: write the test first, watch it fail, then add the script
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `bats tests/status-comment.bats && shellcheck engine/render-status.sh`
-Expected: 7 tests pass.
+Expected: 12 tests pass, shellcheck silent. If shellcheck reports **SC2016** on the
+``printf 'Reason: `%s`\n\n'`` line, the `# shellcheck disable=SC2016` comment above it is missing or
+misplaced — it must sit on the line immediately preceding the `if`.
 
 - [ ] **Step 5: Replace the sticky-comment step in `audit-pr`**
 
@@ -1410,7 +1534,10 @@ Replace the existing `- name: Post docs-sentinel status comment (sticky)` step w
 ```yaml
       - name: Render docs-sentinel status
         id: status
-        if: always()
+        # `!cancelled()`, NOT `always()`. This job has cancel-in-progress: true, and `always()` runs
+        # on cancellation — so a superseded run would render "could not run" and overwrite the
+        # newer run's correct comment.
+        if: ${{ !cancelled() }}
         env:
           DEGRADED: ${{ steps.audit.outputs.degraded }}
           DEGRADED_REASON: ${{ steps.audit.outputs.degraded_reason }}
@@ -1418,37 +1545,75 @@ Replace the existing `- name: Post docs-sentinel status comment (sticky)` step w
           BODY_PATH: ${{ steps.compose.outputs.body_path }}
           SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
           AUDIT_RESULT: ${{ steps.audit.outcome }}
+          GUARD_RESULT: ${{ steps.guard.outcome }}
+          COMMIT_RESULT: ${{ steps.commit.outcome }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # The no-drift heading is emitted ONLY for a completed run with a validated summary and no
-          # edits. Every other terminal state renders as inconclusive or infra — never as a pass.
+          # The no-drift heading is reachable ONLY from the final else: audit succeeded, not
+          # degraded, guardrail passed, and nothing changed.
+          #
+          # The GUARD_RESULT rung is load-bearing. guardrail.sh exits 1 on a violation WITHOUT ever
+          # writing `changed=`, so CHANGED is empty on that path — without this rung the ladder
+          # falls through to `clean` and posts a clean pass for the exact attack the untracked-file
+          # check exists to catch.
+          KIND=""; EDITS_LANDED=false; REASON=""
           if [ "$AUDIT_RESULT" != "success" ]; then
-            OUTCOME=infra; REASON=""
+            OUTCOME=infra
           elif [ -n "$DEGRADED" ]; then
-            OUTCOME=inconclusive; REASON="$DEGRADED_REASON"
+            OUTCOME=inconclusive
+            KIND="$DEGRADED"
+            REASON="$DEGRADED_REASON"
+            # A hygiene failure keeps its edits; they are committed if the guardrail passed.
+            if [ "$DEGRADED" = "hygiene" ] && [ "$COMMIT_RESULT" = "success" ]; then
+              EDITS_LANDED=true
+            fi
+          elif [ "$GUARD_RESULT" != "success" ]; then
+            OUTCOME=inconclusive
+            KIND=guardrail
+            REASON="guardrail rejected the auditor's edits; all edits were reverted"
+          elif [ "$CHANGED" = "true" ] && [ "$COMMIT_RESULT" != "success" ]; then
+            OUTCOME=inconclusive
+            KIND=push
+            REASON="doc fixes were produced but could not be pushed"
           elif [ "$CHANGED" = "true" ]; then
-            OUTCOME=fixed; REASON=""
+            OUTCOME=fixed
           else
             OUTCOME=clean
             REASON="$(cat "$SUMMARY_PATH" 2>/dev/null || true)"
           fi
           BODY=""
           if [ "$OUTCOME" = "fixed" ]; then BODY="$(cat "$BODY_PATH")"; fi
-          OUTCOME="$OUTCOME" REASON="$REASON" BODY="$BODY" RUN_URL="$RUN_URL" \
+          OUTCOME="$OUTCOME" KIND="$KIND" EDITS_LANDED="$EDITS_LANDED" REASON="$REASON" \
+            BODY="$BODY" RUN_URL="$RUN_URL" \
             bash "$ENGINE_DIR/render-status.sh" > "$RUNNER_TEMP/status-body.md"
           echo "body_path=$RUNNER_TEMP/status-body.md" >> "$GITHUB_OUTPUT"
 
       - name: Post docs-sentinel status comment (sticky)
-        if: always() && steps.status.outcome == 'success'
+        if: ${{ !cancelled() }}
         uses: actions/github-script@v9
         env:
           BODY_PATH: ${{ steps.status.outputs.body_path }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
             const fs = require('fs');
             const marker = '<!-- docs-sentinel-status -->';
-            const full = `${marker}\n${fs.readFileSync(process.env.BODY_PATH, 'utf8')}`;
+            // Fallback matters: if the engine fetch failed, ENGINE_DIR never existed, so the render
+            // step could not run and BODY_PATH is empty. Posting nothing here would be the silence
+            // the README's contract forbids.
+            let rendered = '';
+            try { rendered = fs.readFileSync(process.env.BODY_PATH, 'utf8'); } catch {}
+            if (!rendered.trim()) {
+              rendered = [
+                '⚠️ **Docs audit — could not run.** Setup failed before the audit started, so this change has **not** been checked for documentation drift.',
+                '',
+                `[View the run](${process.env.RUN_URL})`,
+                '',
+                '<sub>Generated by [docs-sentinel](https://github.com/slingshot/docs-sentinel).</sub>',
+              ].join('\n');
+            }
+            const full = `${marker}\n${rendered}`;
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -1462,22 +1627,18 @@ Replace the existing `- name: Post docs-sentinel status comment (sticky)` step w
             }
 ```
 
-- [ ] **Step 6: Point `comment-pr-skip` at the shared renderer**
+The `BODY_PATH` fallback is what makes the engine-fetch failure path survivable: the renderer lives
+*inside* the engine checkout, so it cannot report its own absence.
 
-In the `comment-pr-skip` job, replace the inline body construction with a checkout + render so the
-wording has exactly one source. Add before the github-script step:
+- [ ] **Step 6: Leave `comment-pr-skip` untouched — and confirm you did**
 
-```yaml
-      - uses: actions/checkout@v7
-      - name: Render skip status
-        id: status
-        run: |
-          set -euo pipefail
-          OUTCOME=skipped bash engine/render-status.sh > "$RUNNER_TEMP/status-body.md"
-          echo "body_path=$RUNNER_TEMP/status-body.md" >> "$GITHUB_OUTPUT"
+```bash
+git diff --name-only | grep -q audit.yml && \
+  git diff .github/workflows/audit.yml | grep -c 'comment-pr-skip'
 ```
 
-and change its script to read `process.env.BODY_PATH` exactly as in Step 5.
+Expected: `0`. That job must keep its inline wording; see the note under **Files** for why a
+checkout there cannot work in a reusable workflow.
 
 - [ ] **Step 7: Verify the false-heading path is gone**
 
@@ -1532,8 +1693,9 @@ that agrees with what it changed.
 
 - [ ] **Step 2: Correct the stale draft-PR claim**
 
-`README.md:22` says the docs-sync PR is a "single rolling **draft** docs-sync PR", but `a0bb572`
-changed it to open as ready (`audit.yml:639` sets `draft: false`). Remove the word "draft":
+The README still calls the docs-sync PR a "single rolling **draft** docs-sync PR" (locate it with
+`grep -n 'draft' README.md`), but `a0bb572` changed it to open as ready — `audit.yml:639` sets
+`draft: false`. Remove the word "draft":
 
 ```markdown
 - 🔁 **On a push to your default branch** — it maintains a single rolling **docs-sync PR**
@@ -1576,3 +1738,21 @@ and 9; timeouts → Task 8; tests → every task; blast radius → Task 10.
 **Known ordering note.** Task 9 Step 1 creates the script before Step 2 writes the test. Executed
 strictly TDD, write `tests/status-comment.bats` first, watch it fail, then add
 `engine/render-status.sh`. The content of both is fully specified either way.
+
+**Deliberate spec deviations, recorded.**
+
+- The spec says "Normalize first: NFKC". Portable shell has no NFKC folding, so
+  `validate-summary.sh` strips CR and enumerates both the fullwidth (U+FF5C) and ASCII (`<|`)
+  spellings of the DSML delimiter instead. The spec has been amended to match.
+- The spec says "After the guardrail runs, revalidate the summary against the guardrail's canonical
+  changed-file list." This is subsumed by Task 9's decision ladder, which consults
+  `steps.guard.outcome` directly — a guardrail rejection can no longer reach any success rendering,
+  which is the outcome the revalidation existed to guarantee.
+- `comment-pr-skip` keeps its own inline skip wording rather than sharing `render-status.sh`; a
+  checkout in that job would fetch the caller's repository, not the engine.
+
+**Review provenance.** This plan was reviewed by transcribing every script and test into a scratch
+repo and executing them under bash 3.2 with BSD awk/grep (68/68 green), and by applying the
+workflow edits to a copy of `audit.yml` and running `actionlint`. The two blockers that review
+found — `comment-pr-skip` having no engine checkout, and the decision ladder rendering a guardrail
+violation as a clean pass — are fixed above.
