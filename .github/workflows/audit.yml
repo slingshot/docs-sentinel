@@ -376,38 +376,27 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          # The no-drift heading is reachable ONLY from the final else: audit succeeded, not
-          # degraded, guardrail passed, and nothing changed.
+          # The decision ladder (including the load-bearing GUARD_RESULT rung — guardrail.sh
+          # exits 1 on a violation WITHOUT ever writing `changed=`, so CHANGED is empty on that
+          # path) lives in decide-outcome.sh and is covered by tests/decide-outcome.bats, whose
+          # regression test proves what breaks if that rung is dropped: a clean-pass comment for
+          # the exact attack the guardrail exists to catch.
           #
-          # The GUARD_RESULT rung is load-bearing. guardrail.sh exits 1 on a violation WITHOUT ever
-          # writing `changed=`, so CHANGED is empty on that path — without this rung the ladder
-          # falls through to `clean` and posts a clean pass for the exact attack the untracked-file
-          # check exists to catch.
-          KIND=""; EDITS_LANDED=false; REASON=""
-          if [ "$AUDIT_RESULT" != "success" ]; then
-            OUTCOME=infra
-          elif [ -n "$DEGRADED" ]; then
-            OUTCOME=inconclusive
-            KIND="$DEGRADED"
-            REASON="$DEGRADED_REASON"
-            # A hygiene failure keeps its edits; they are committed if the guardrail passed.
-            if [ "$DEGRADED" = "hygiene" ] && [ "$COMMIT_RESULT" = "success" ]; then
-              EDITS_LANDED=true
-            fi
-          elif [ "$GUARD_RESULT" != "success" ]; then
-            OUTCOME=inconclusive
-            KIND=guardrail
-            REASON="guardrail rejected the auditor's edits; all edits were reverted"
-          elif [ "$CHANGED" = "true" ] && [ "$COMMIT_RESULT" != "success" ]; then
-            OUTCOME=inconclusive
-            KIND=push
-            REASON="doc fixes were produced but could not be pushed"
-          elif [ "$CHANGED" = "true" ]; then
-            OUTCOME=fixed
-          else
-            OUTCOME=clean
-            REASON="$(cat "$SUMMARY_PATH" 2>/dev/null || true)"
-          fi
+          # decide-outcome.sh prints OUTCOME=/KIND=/EDITS_LANDED= on the first three lines, then
+          # the raw (possibly multi-line) REASON for every line after — read with `< <(...)`, not
+          # a pipe, so the assignments land in this shell rather than a subshell.
+          {
+            IFS= read -r OUTCOME_LINE
+            IFS= read -r KIND_LINE
+            IFS= read -r EDITS_LANDED_LINE
+            REASON=$(cat)
+          } < <(AUDIT_RESULT="$AUDIT_RESULT" GUARD_RESULT="$GUARD_RESULT" DEGRADED="$DEGRADED" \
+                  DEGRADED_REASON="$DEGRADED_REASON" CHANGED="$CHANGED" \
+                  COMMIT_RESULT="$COMMIT_RESULT" SUMMARY_PATH="$SUMMARY_PATH" \
+                  bash "$ENGINE_DIR/decide-outcome.sh")
+          OUTCOME="${OUTCOME_LINE#OUTCOME=}"
+          KIND="${KIND_LINE#KIND=}"
+          EDITS_LANDED="${EDITS_LANDED_LINE#EDITS_LANDED=}"
           BODY=""
           if [ "$OUTCOME" = "fixed" ]; then BODY="$(cat "$BODY_PATH")"; fi
           OUTCOME="$OUTCOME" KIND="$KIND" EDITS_LANDED="$EDITS_LANDED" REASON="$REASON" \
