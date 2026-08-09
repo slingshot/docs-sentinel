@@ -184,6 +184,8 @@ allowlist and churn budgets — a misbehaving model gets its edits reverted, not
 | Change touches no source files | Sticky comment: skipped |
 | Auditor ran but its summary was unusable | Sticky comment: **inconclusive**. Any doc edits still land — they passed the guardrail — but the change was not confirmed drift-free. Retried once before reporting. |
 | Auditor did not complete (crash, timeout, provider error) | Sticky comment: **inconclusive**. All edits are discarded, because a half-finished edit set can pass the guardrail while making no sense. |
+| Auditor edited files outside the allowlist or exceeded the churn budget | Sticky comment: **inconclusive**. Every edit is reverted; the job also fails so the PR can't merge unreviewed. |
+| Doc fixes were produced but could not be committed to the branch | Sticky comment: **inconclusive**. Nothing was pushed, so review the run log directly. |
 | Setup failed before the audit | Sticky comment: could not run |
 
 docs-sentinel never reports "no drift" unless the audit actually completed and produced a summary
@@ -193,7 +195,8 @@ that agrees with what it changed.
 - **No `SYNC_PR_TOKEN`:** the docs-sync PR opens via `GITHUB_TOKEN` with a warning; its CI checks
   won't auto-trigger until you provide a PAT/App token.
 - **Missing policy file:** the audit job fails fast, naming the expected path.
-- **Guardrail violation:** all auditor edits are reverted and the job fails loudly.
+- **Guardrail violation:** all auditor edits are reverted and the job fails loudly — and still posts
+  a sticky inconclusive comment, so the PR shows the failure without you having to open the run log.
 - **Fork PRs and drafts:** skipped at the gate.
 
 ## FAQ
