@@ -96,6 +96,7 @@ out() { grep "^$1=" "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-; }
     else
       grep -q poisoned .docs-sentinel-context.md && echo "CONTEXT_NOT_RESET" >&2
       grep -q attempt1 README.md && echo "TREE_NOT_RESET" >&2
+      [ -s .docs-sentinel-context.md ] || echo "CONTEXT_NOT_REGENERATED" >&2
       printf "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"No documentation updates needed — clean.\"}]}}\n"
       printf "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n"
     fi'
@@ -104,6 +105,7 @@ out() { grep "^$1=" "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-; }
   [ "$(out degraded)" = "" ]
   ! grep -q "CONTEXT_NOT_RESET" "$RUNNER_TEMP"/auditor-stderr-2.log
   ! grep -q "TREE_NOT_RESET" "$RUNNER_TEMP"/auditor-stderr-2.log
+  ! grep -q "CONTEXT_NOT_REGENERATED" "$RUNNER_TEMP"/auditor-stderr-2.log
 }
 
 @test "the credential never appears in argv" {
