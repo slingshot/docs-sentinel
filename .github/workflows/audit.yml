@@ -191,7 +191,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && github.event_name == 'pull_request'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: write
       pull-requests: write
@@ -298,19 +298,25 @@ jobs:
         run: bash "$ENGINE_DIR/build-context.sh"
 
       - name: Run docs auditor (Claude Code CLI)
+        id: audit
+        # Step-level timeout, tighter than the job's. A JOB timeout is a cancellation: remaining
+        # steps, including `always()` ones, are not reliably run — so a hung attempt would bypass
+        # every rendering guarantee in Task 9 and go silent. A STEP timeout fails the step, leaving
+        # the render step to post the infra outcome.
+        timeout-minutes: 20
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
           COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
+          RANGE: ${{ needs.gate.outputs.range }}
+          DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
           ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
         run: |
           set -euo pipefail
           # Install via npm (not bun) so the postinstall that fetches the native binary runs.
-          # Pinned version, isolated prefix -> deterministic, no global perms.
           npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
           export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
           claude --version
-          # Fallback commit-body line width injected into the prompt; validate before substituting.
           LINE_MAX="${COMMIT_BODY_LINE_LENGTH:-100}"
           if ! printf '%s' "$LINE_MAX" | grep -qE '^[1-9][0-9]*$'; then
             echo "::error::commit-body-line-length must be a positive integer (got '$LINE_MAX')."; exit 1
@@ -318,21 +324,7 @@ jobs:
           cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
           sed "s/{{COMMIT_BODY_LINE_LENGTH}}/$LINE_MAX/g" "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/prompt.md.tmp"
           mv "$RUNNER_TEMP/prompt.md.tmp" "$RUNNER_TEMP/prompt.md"
-          # --output-format json so we can lift the auditor's final summary into the commit
-          # message + PR body in a later step, instead of boilerplate.
-          set +e
-          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
-            --allowed-tools "Read,Edit,Grep,Glob" \
-            --permission-mode acceptEdits \
-            --output-format json > "$RUNNER_TEMP/auditor.json"
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::error::Claude Code exited with status $status"; cat "$RUNNER_TEMP/auditor.json" || true
-            exit "$status"
-          fi
-          jq -r '.result // ""' "$RUNNER_TEMP/auditor.json" > "$RUNNER_TEMP/auditor-summary.md"
-          echo "----- Auditor summary -----"; cat "$RUNNER_TEMP/auditor-summary.md"; echo "---------------------------"
+          PROMPT_PATH="$RUNNER_TEMP/prompt.md" bash "$ENGINE_DIR/run-auditor.sh"
 
       - name: Guardrail — keep edits in the doc allowlist and bounded
         id: guard
@@ -348,11 +340,12 @@ jobs:
         if: steps.guard.outputs.changed == 'true'
         env:
           FILES_PATH: ${{ steps.guard.outputs.files_path }}
-          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
           SHA: ${{ github.event.pull_request.head.sha }}
         run: bash "$ENGINE_DIR/compose-message.sh"
 
       - name: Commit & push doc fixes to the PR branch
+        id: commit
         if: steps.guard.outputs.changed == 'true'
         env:
           HEAD_REF: ${{ github.head_ref }}
@@ -372,7 +365,7 @@ jobs:
         env:
           CHANGED: ${{ steps.guard.outputs.changed }}
           BODY_PATH: ${{ steps.compose.outputs.body_path }}
-          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
         with:
           script: |
             const fs = require('fs');
@@ -451,7 +444,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true' && github.event_name == 'push'
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: write
       pull-requests: write
@@ -555,17 +548,25 @@ jobs:
         run: bash "$ENGINE_DIR/build-context.sh"
 
       - name: Run docs auditor (Claude Code CLI)
+        id: audit
+        # Step-level timeout, tighter than the job's. A JOB timeout is a cancellation: remaining
+        # steps, including `always()` ones, are not reliably run — so a hung attempt would bypass
+        # every rendering guarantee in Task 9 and go silent. A STEP timeout fails the step, leaving
+        # the render step to post the infra outcome.
+        timeout-minutes: 20
         env:
           CLAUDE_VERSION: ${{ inputs.claude-code-version }}
           COMMIT_BODY_LINE_LENGTH: ${{ inputs.commit-body-line-length }}
+          RANGE: ${{ needs.gate.outputs.range }}
+          DIFF_EXCLUDE: ${{ inputs.diff-exclude }}
           ANTHROPIC_AUTH_TOKEN: ${{ inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
           ANTHROPIC_API_KEY: ${{ !inputs.use-bearer-auth && secrets.MODEL_API_KEY || '' }}
         run: |
           set -euo pipefail
+          # Install via npm (not bun) so the postinstall that fetches the native binary runs.
           npm install -g --prefix "$RUNNER_TEMP/claude-cli" "@anthropic-ai/claude-code@$CLAUDE_VERSION"
           export PATH="$RUNNER_TEMP/claude-cli/bin:$PATH"
           claude --version
-          # Fallback commit-body line width injected into the prompt; validate before substituting.
           LINE_MAX="${COMMIT_BODY_LINE_LENGTH:-100}"
           if ! printf '%s' "$LINE_MAX" | grep -qE '^[1-9][0-9]*$'; then
             echo "::error::commit-body-line-length must be a positive integer (got '$LINE_MAX')."; exit 1
@@ -573,19 +574,7 @@ jobs:
           cat "$ENGINE_DIR/prompt-skeleton.md" "$POLICY_FILE" > "$RUNNER_TEMP/prompt.md"
           sed "s/{{COMMIT_BODY_LINE_LENGTH}}/$LINE_MAX/g" "$RUNNER_TEMP/prompt.md" > "$RUNNER_TEMP/prompt.md.tmp"
           mv "$RUNNER_TEMP/prompt.md.tmp" "$RUNNER_TEMP/prompt.md"
-          set +e
-          claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
-            --allowed-tools "Read,Edit,Grep,Glob" \
-            --permission-mode acceptEdits \
-            --output-format json > "$RUNNER_TEMP/auditor.json"
-          status=$?
-          set -e
-          if [ "$status" -ne 0 ]; then
-            echo "::error::Claude Code exited with status $status"; cat "$RUNNER_TEMP/auditor.json" || true
-            exit "$status"
-          fi
-          jq -r '.result // ""' "$RUNNER_TEMP/auditor.json" > "$RUNNER_TEMP/auditor-summary.md"
-          echo "----- Auditor summary -----"; cat "$RUNNER_TEMP/auditor-summary.md"; echo "---------------------------"
+          PROMPT_PATH="$RUNNER_TEMP/prompt.md" bash "$ENGINE_DIR/run-auditor.sh"
 
       - name: Guardrail — keep edits in the doc allowlist and bounded
         id: guard
@@ -601,7 +590,7 @@ jobs:
         if: steps.guard.outputs.changed == 'true'
         env:
           FILES_PATH: ${{ steps.guard.outputs.files_path }}
-          SUMMARY_PATH: ${{ runner.temp }}/auditor-summary.md
+          SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
           SHA: ${{ github.sha }}
         run: bash "$ENGINE_DIR/compose-message.sh"
 
