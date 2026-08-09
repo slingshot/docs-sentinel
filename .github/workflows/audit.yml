@@ -11,11 +11,13 @@ name: Docs Sentinel
 # job.workflow_sha — the exact commit of this workflow file the caller pinned — so consumer
 # workspaces stay pristine and engine and workflow can never skew.
 #
-# Default model routing is DeepSeek V4 Flash via OpenRouter (Anthropic-compatible endpoint, bearer
-# auth). Both tiers use the '~...-latest' floating alias, so they track DeepSeek's current Flash
-# build rather than a pinned dated one — pass an explicit slug to pin. Reasoning runs at `high`
-# effort on every tier; see the effort and model-capabilities inputs. For Anthropic-native auth:
-# use-bearer-auth: false, anthropic-base-url: '', model: '', small-model: ''.
+# Default model routing goes through OpenRouter (Anthropic-compatible endpoint, bearer auth):
+# GLM 5.2 for the main tier, DeepSeek V4 Flash for the Haiku/background tier. Both are pinned to
+# concrete versions rather than a '~...-latest' floating alias, so a run is reproducible and an
+# upstream rebuild cannot change the auditor under you. Reasoning runs at `xhigh` effort on every
+# tier — which requires `xhigh_effort` in model-capabilities, or Claude Code clamps it to `high`.
+# For Anthropic-native auth: use-bearer-auth: false, anthropic-base-url: '', model: '',
+# small-model: ''.
 
 on:
   workflow_call:
@@ -71,19 +73,19 @@ on:
       model:
         description: Main session model slug (empty = Claude Code defaults)
         type: string
-        default: '~deepseek/deepseek-v4-flash-latest'
+        default: 'z-ai/glm-5.2'
       small-model:
         description: Haiku-tier / background model slug (empty = Claude Code defaults)
         type: string
-        default: '~deepseek/deepseek-v4-flash-latest'
+        default: 'deepseek/deepseek-v4-flash-0731'
       effort:
         description: 'Reasoning effort for every tier: low|medium|high|xhigh|max|auto (empty = leave to the model/gateway default)'
         type: string
-        default: 'high'
+        default: 'xhigh'
       model-capabilities:
         description: Comma-separated CLAUDE capabilities declared for the pinned models. Claude Code gates reasoning by pattern-matching the model ID, so a gateway slug needs this or effort/thinking stay off. Empty = fall back to Claude Code's built-in detection.
         type: string
-        default: 'effort,thinking,adaptive_thinking,interleaved_thinking'
+        default: 'effort,xhigh_effort,thinking,adaptive_thinking,interleaved_thinking'
       use-bearer-auth:
         description: 'true: MODEL_API_KEY -> ANTHROPIC_AUTH_TOKEN (OpenRouter-style). false: -> ANTHROPIC_API_KEY (Anthropic-native)'
         type: boolean
@@ -271,9 +273,9 @@ jobs:
           # Reasoning. Claude Code decides whether a model can think by pattern-matching the
           # model ID against known Anthropic families, so a gateway slug lands in the "no
           # reasoning" bucket and effort is silently ignored. Declaring capabilities per pinned
-          # tier opts the model back in. xhigh_effort/max_effort are deliberately absent from
-          # the default set: deepseek-v4-flash advertises no xhigh, and leaving them out makes
-          # Claude Code clamp its own xhigh default down to high.
+          # tier opts the model back in. xhigh_effort IS in the default set because the default
+          # effort is xhigh — omit it and Claude Code silently clamps xhigh down to high, making
+          # the effort input a no-op. max_effort stays out: neither pinned model advertises it.
           if [ -n "$CAPS" ]; then
             if [ -n "$MODEL" ]; then
               {
@@ -565,9 +567,9 @@ jobs:
           # Reasoning. Claude Code decides whether a model can think by pattern-matching the
           # model ID against known Anthropic families, so a gateway slug lands in the "no
           # reasoning" bucket and effort is silently ignored. Declaring capabilities per pinned
-          # tier opts the model back in. xhigh_effort/max_effort are deliberately absent from
-          # the default set: deepseek-v4-flash advertises no xhigh, and leaving them out makes
-          # Claude Code clamp its own xhigh default down to high.
+          # tier opts the model back in. xhigh_effort IS in the default set because the default
+          # effort is xhigh — omit it and Claude Code silently clamps xhigh down to high, making
+          # the effort input a no-op. max_effort stays out: neither pinned model advertises it.
           if [ -n "$CAPS" ]; then
             if [ -n "$MODEL" ]; then
               {

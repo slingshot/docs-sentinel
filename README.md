@@ -109,23 +109,24 @@ All inputs are optional.
 | `runner` | `ubuntu-latest` | Runner label for all jobs |
 | `claude-code-version` | `2.1.223` | Pinned `@anthropic-ai/claude-code` npm version |
 | `anthropic-base-url` | `https://openrouter.ai/api` | Model gateway base URL |
-| `model` | `~deepseek/deepseek-v4-flash-latest` | Main auditor model |
-| `small-model` | `~deepseek/deepseek-v4-flash-latest` | Background/summarization model |
-| `effort` | `high` | Reasoning effort for every tier (`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`auto`; empty = model default) |
-| `model-capabilities` | `effort,thinking,adaptive_thinking,interleaved_thinking` | Capabilities declared for the pinned models (empty = Claude Code's built-in detection) |
+| `model` | `z-ai/glm-5.2` | Main auditor model |
+| `small-model` | `deepseek/deepseek-v4-flash-0731` | Background/summarization model |
+| `effort` | `xhigh` | Reasoning effort for every tier (`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`auto`; empty = model default) |
+| `model-capabilities` | `effort,xhigh_effort,thinking,adaptive_thinking,interleaved_thinking` | Capabilities declared for the pinned models (empty = Claude Code's built-in detection) |
 | `use-bearer-auth` | `true` | `true`: OpenRouter-style bearer auth. `false`: Anthropic-native `ANTHROPIC_API_KEY` |
 
-The leading `~` is OpenRouter's marker for a *floating* alias: `~deepseek/deepseek-v4-flash-latest`
-follows DeepSeek's current Flash build, so the auditor stays current without a bump here. Pass a
-dated slug (e.g. `deepseek/deepseek-v4-flash-0731`) if you'd rather pin it.
+Both defaults are pinned to concrete versions rather than one of OpenRouter's `~…-latest` floating
+aliases, so a given workflow SHA always audits with the same models and an upstream rebuild cannot
+change the auditor's behaviour under you. Pass a `~…-latest` slug if you would rather track the
+newest build automatically.
 
 `model-capabilities` exists because Claude Code decides whether a model can reason by
 pattern-matching the model ID against known Anthropic families — a gateway slug matches nothing,
 so effort and thinking are switched off no matter what the model supports. Declaring the
-capabilities opts the pinned models back in and lets `effort` take hold. `xhigh_effort` and
-`max_effort` are deliberately left out: DeepSeek V4 Flash advertises no `xhigh`, and omitting them
-makes Claude Code clamp its own `xhigh` default down to `high`. Point this at a model without
-reasoning and you should clear the input.
+capabilities opts the pinned models back in and lets `effort` take hold. `xhigh_effort` is in the
+default list because the default `effort` is `xhigh` — leave it out and Claude Code clamps `xhigh`
+down to `high`, so the effort setting silently does nothing. `max_effort` stays out: neither pinned
+model advertises it. Point this at a model without reasoning and you should clear the input.
 
 ## Using Anthropic directly (instead of OpenRouter)
 
