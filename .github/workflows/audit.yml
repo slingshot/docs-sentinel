@@ -358,36 +358,88 @@ jobs:
           git commit -F "$COMMIT_PATH"
           git push origin "HEAD:${HEAD_REF}"
 
-      # Always leave a single, sticky status comment — drift or not — so every PR shows the
-      # docs-sentinel result instead of going silent when there's nothing to fix.
-      - name: Post docs-sentinel status comment (sticky)
-        uses: actions/github-script@v9
+      - name: Render docs-sentinel status
+        id: status
+        # `!cancelled()`, NOT `always()`. This job has cancel-in-progress: true, and `always()` runs
+        # on cancellation — so a superseded run would render "could not run" and overwrite the
+        # newer run's correct comment.
+        if: ${{ !cancelled() }}
         env:
+          DEGRADED: ${{ steps.audit.outputs.degraded }}
+          DEGRADED_REASON: ${{ steps.audit.outputs.degraded_reason }}
           CHANGED: ${{ steps.guard.outputs.changed }}
           BODY_PATH: ${{ steps.compose.outputs.body_path }}
           SUMMARY_PATH: ${{ steps.audit.outputs.summary_path }}
+          AUDIT_RESULT: ${{ steps.audit.outcome }}
+          GUARD_RESULT: ${{ steps.guard.outcome }}
+          COMMIT_RESULT: ${{ steps.commit.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The no-drift heading is reachable ONLY from the final else: audit succeeded, not
+          # degraded, guardrail passed, and nothing changed.
+          #
+          # The GUARD_RESULT rung is load-bearing. guardrail.sh exits 1 on a violation WITHOUT ever
+          # writing `changed=`, so CHANGED is empty on that path — without this rung the ladder
+          # falls through to `clean` and posts a clean pass for the exact attack the untracked-file
+          # check exists to catch.
+          KIND=""; EDITS_LANDED=false; REASON=""
+          if [ "$AUDIT_RESULT" != "success" ]; then
+            OUTCOME=infra
+          elif [ -n "$DEGRADED" ]; then
+            OUTCOME=inconclusive
+            KIND="$DEGRADED"
+            REASON="$DEGRADED_REASON"
+            # A hygiene failure keeps its edits; they are committed if the guardrail passed.
+            if [ "$DEGRADED" = "hygiene" ] && [ "$COMMIT_RESULT" = "success" ]; then
+              EDITS_LANDED=true
+            fi
+          elif [ "$GUARD_RESULT" != "success" ]; then
+            OUTCOME=inconclusive
+            KIND=guardrail
+            REASON="guardrail rejected the auditor's edits; all edits were reverted"
+          elif [ "$CHANGED" = "true" ] && [ "$COMMIT_RESULT" != "success" ]; then
+            OUTCOME=inconclusive
+            KIND=push
+            REASON="doc fixes were produced but could not be pushed"
+          elif [ "$CHANGED" = "true" ]; then
+            OUTCOME=fixed
+          else
+            OUTCOME=clean
+            REASON="$(cat "$SUMMARY_PATH" 2>/dev/null || true)"
+          fi
+          BODY=""
+          if [ "$OUTCOME" = "fixed" ]; then BODY="$(cat "$BODY_PATH")"; fi
+          OUTCOME="$OUTCOME" KIND="$KIND" EDITS_LANDED="$EDITS_LANDED" REASON="$REASON" \
+            BODY="$BODY" RUN_URL="$RUN_URL" \
+            bash "$ENGINE_DIR/render-status.sh" > "$RUNNER_TEMP/status-body.md"
+          echo "body_path=$RUNNER_TEMP/status-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Post docs-sentinel status comment (sticky)
+        if: ${{ !cancelled() }}
+        uses: actions/github-script@v9
+        env:
+          BODY_PATH: ${{ steps.status.outputs.body_path }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         with:
           script: |
             const fs = require('fs');
             const marker = '<!-- docs-sentinel-status -->';
-            let body;
-            if (process.env.CHANGED === 'true') {
-              body = fs.readFileSync(process.env.BODY_PATH, 'utf8');
-            } else {
-              let reason = '';
-              try { reason = fs.readFileSync(process.env.SUMMARY_PATH, 'utf8').trim(); } catch {}
-              if (!reason) {
-                reason = 'No documentation updates needed — the code change did not contradict any in-scope doc.';
-              }
-              body = [
-                '🤖 **Docs audit** — no documentation drift detected.',
+            // Fallback matters: if the engine fetch failed, ENGINE_DIR never existed, so the render
+            // step could not run and BODY_PATH is empty. Posting nothing here would be the silence
+            // the README's contract forbids.
+            let rendered = '';
+            try { rendered = fs.readFileSync(process.env.BODY_PATH, 'utf8'); } catch {}
+            if (!rendered.trim()) {
+              rendered = [
+                '⚠️ **Docs audit — could not run.** Setup failed before the audit started, so this change has **not** been checked for documentation drift.',
                 '',
-                reason,
+                `[View the run](${process.env.RUN_URL})`,
                 '',
                 '<sub>Generated by [docs-sentinel](https://github.com/slingshot/docs-sentinel).</sub>',
               ].join('\n');
             }
-            const full = `${marker}\n${body}`;
+            const full = `${marker}\n${rendered}`;
             const { owner, repo } = context.repo;
             const issue_number = context.issue.number;
             const comments = await github.paginate(github.rest.issues.listComments, {
