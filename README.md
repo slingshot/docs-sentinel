@@ -109,8 +109,8 @@ All inputs are optional.
 | `runner` | `ubuntu-latest` | Runner label for all jobs |
 | `claude-code-version` | `2.1.223` | Pinned `@anthropic-ai/claude-code` npm version |
 | `anthropic-base-url` | `https://openrouter.ai/api` | Model gateway base URL |
-| `model` | `z-ai/glm-5.2` | Main auditor model |
-| `small-model` | `deepseek/deepseek-v4-flash-0731` | Background/summarization model |
+| `model` | `z-ai/glm-5.3` | Main auditor model |
+| `small-model` | `z-ai/glm-5.3-flash` | Background/summarization model |
 | `effort` | `xhigh` | Reasoning effort for every tier (`low`\|`medium`\|`high`\|`xhigh`\|`max`\|`auto`; empty = model default) |
 | `model-capabilities` | `effort,xhigh_effort,thinking,adaptive_thinking,interleaved_thinking` | Capabilities declared for the pinned models (empty = Claude Code's built-in detection) |
 | `use-bearer-auth` | `true` | `true`: OpenRouter-style bearer auth. `false`: Anthropic-native `ANTHROPIC_API_KEY` |

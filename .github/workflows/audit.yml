@@ -12,7 +12,7 @@ name: Docs Sentinel
 # workspaces stay pristine and engine and workflow can never skew.
 #
 # Default model routing goes through OpenRouter (Anthropic-compatible endpoint, bearer auth):
-# GLM 5.2 for the main tier, DeepSeek V4 Flash for the Haiku/background tier. Both are pinned to
+# GLM 5.3 for the main tier, GLM 5.3 Flash for the Haiku/background tier. Both are pinned to
 # concrete versions rather than a '~...-latest' floating alias, so a run is reproducible and an
 # upstream rebuild cannot change the auditor under you. Reasoning runs at `xhigh` effort on every
 # tier — which requires `xhigh_effort` in model-capabilities, or Claude Code clamps it to `high`.
@@ -73,11 +73,11 @@ on:
       model:
         description: Main session model slug (empty = Claude Code defaults)
         type: string
-        default: 'z-ai/glm-5.2'
+        default: 'z-ai/glm-5.3'
       small-model:
         description: Haiku-tier / background model slug (empty = Claude Code defaults)
         type: string
-        default: 'deepseek/deepseek-v4-flash-0731'
+        default: 'z-ai/glm-5.3-flash'
       effort:
         description: 'Reasoning effort for every tier: low|medium|high|xhigh|max|auto (empty = leave to the model/gateway default)'
         type: string
