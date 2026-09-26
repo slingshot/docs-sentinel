@@ -64,7 +64,7 @@ jobs:
 ```
 
 Notes:
-- The defaults (budgets 15 files / 800 lines, lockfile skip list, `docs/sync` branch, GLM-5.3 via
+- The defaults (budgets 15 files / 800 lines, lockfile skip list, `docs/sync` branch, GLM 5.3 Flash via
   OpenRouter) are sensible — only add `with:` keys the survey justifies. Full inputs table:
   [README → Inputs](https://github.com/slingshot/docs-sentinel#inputs).
 - If the repo pays for Anthropic directly instead of OpenRouter, use the
